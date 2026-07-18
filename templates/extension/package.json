@@ -1,0 +1,30 @@
+{
+	"name": "extension-name",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"keywords": [
+		"pi-package"
+	],
+	"scripts": {
+		"check": "biome check . && tsc --noEmit",
+		"test": "vitest run"
+	},
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.4",
+		"@types/node": "^22.20.1",
+		"typescript": "^7.0.2",
+		"vitest": "^4.1.10"
+	}
+}
