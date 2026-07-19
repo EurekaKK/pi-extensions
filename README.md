@@ -27,7 +27,7 @@ pi-extensions/
 - `templates/extension/`：创建新 extension 的标准脚手架。
 - `scripts/`：仓库级开发与发布辅助脚本。
 
-仓库目前处于初始化阶段；workspace、模板和公共脚本将在创建首个 extension 时按上述结构建立。
+仓库使用 npm workspaces 管理各个独立 extension。
 
 ## 环境要求
 
@@ -63,10 +63,9 @@ npm test --workspaces
 
 ## Extension 索引
 
-当前暂无 extension。
-
 | 名称 | 状态 | 说明 | 路径 |
 | --- | --- | --- | --- |
+| `bash-permissions` | experimental | 在 LLM 的内置 bash 调用执行前按三色规则判定风险 | [`extensions/bash-permissions`](./extensions/bash-permissions/) |
 
 新增、重命名、弃用或删除 extension 时，必须同步维护此索引。
 

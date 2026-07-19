@@ -1,6 +1,6 @@
 # bash-permissions v1 规格
 
-- 状态：已确认，待实现
+- 状态：已确认，已实现
 - extension：`bash-permissions`
 - 适用版本：v1
 - 最后确认日期：2026-07-19
@@ -62,19 +62,24 @@
 
 ```text
 extensions/bash-permissions/
+├── index.ts
 ├── package.json
 ├── README.md
 ├── defaults/
 │   ├── yellow.json
 │   └── red.json
 ├── src/
-│   └── index.ts
+│   ├── config.ts
+│   ├── index.ts
+│   └── policy.ts
 ├── test/
 ├── tsconfig.json
 └── biome.json
 ```
 
 发布 package 时必须显式包含 `defaults/`。
+
+根目录 `index.ts` 只作为 Pi 的命名适配入口，使本地路径安装时欢迎页显示 `bash-permissions`；标准实现入口仍为 `src/index.ts`，package manifest 显式保留该入口并仅启用命名适配入口。
 
 ### 4.2 安装后的用户配置
 
@@ -233,7 +238,7 @@ extension 必须通过 Pi 的 `getAgentDir()` 确定用户配置根目录，不�
 对每个 LLM `bash` tool call，按以下顺序执行：
 
 1. 如果当前 session 的 extension 状态为 disabled，直接返回，不干预 Pi 原始行为。
-2. 取得 LLM 提交给 bash 工具的完整原始命令，不截断、不重写。
+2. 取得 LLM 提交给 bash 工具的完整原始命令，不截断，也不修改待执行的 tool 参数。
 3. 使用全部红色规则匹配命令。
 4. 如果命中一条或多条红色规则，阻止命令并返回全部红色命中项。
 5. 只有未命中红色时，才使用全部黄色规则匹配命令。
@@ -242,6 +247,8 @@ extension 必须通过 Pi 的 `getAgentDir()` 确定用户配置根目录，不�
 8. 有有效资格时，消费资格并允许命令执行；否则阻止命令、返回全部黄色命中项并创建下一轮复审资格。
 
 同一颜色内不得采用“第一条命中即停止”。红色始终优先，黄色资格永远不能覆盖红色判定。
+
+匹配时先检查完整原始文本。若命令包含 Bash 在词法阶段会删除的反斜杠换行，extension 还必须检查删除这些续行符后的等价视图，包括 CRLF 形式；普通单引号内的反斜杠换行保持原样，但旧式反引号命令替换会按 Bash 的预处理语义删除。该视图只用于补充规则匹配，不替换原始命令，也不参与黄色命令同一性计算。
 
 ## 9. 黄色复审状态机
 
@@ -350,12 +357,13 @@ extension 使用固定中文协议外壳，并在其中加入用户配置内容�
 ### 12.1 正常启用
 
 - 不弹出常规通知。
-- 使用带 extension 前缀的状态键 `bash-permissions`。
-- 状态栏显示当前运行时快照的黄色和红色规则数量，例如 `bash-permissions: 8 yellow / 6 red`。
+- TUI 欢迎页的 `[Extensions]` 区域显示一次 `bash-permissions`，不显示实现目录名 `src`。
+- 不注册正常运行的常驻状态，不占用 footer，也不重复显示黄色和红色规则数量。
 
 ### 12.2 首次创建配置
 
-- 创建完成后通知一次用户配置文件的实际路径。
+- TUI/RPC 等 `ctx.hasUI` 为真的模式在创建完成后通知一次用户配置文件的实际路径。
+- JSON/print 等无 UI 模式不输出正常启动噪声；配置路径仍由 agent 目录和固定子目录确定。
 - 后续 session 不重复提示，除非又创建了缺失文件。
 
 ### 12.3 配置或初始化失败
