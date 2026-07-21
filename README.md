@@ -66,6 +66,7 @@ npm test --workspaces
 | 名称 | 状态 | 说明 | 路径 |
 | --- | --- | --- | --- |
 | `bash-permissions` | experimental | 在 LLM 的内置 bash 调用执行前按三色规则判定风险 | [`extensions/bash-permissions`](./extensions/bash-permissions/) |
+| `tavily-web-search` | experimental | 通过 Tavily 搜索公共互联网，并以受限 Extract 检查候选来源 | [`extensions/tavily-web-search`](./extensions/tavily-web-search/) |
 
 新增、重命名、弃用或删除 extension 时，必须同步维护此索引。
 
