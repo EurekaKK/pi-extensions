@@ -9,13 +9,18 @@
 	"keywords": [
 		"pi-package"
 	],
+	"files": [
+		"index.ts",
+		"src/**/*.ts",
+		"README.md"
+	],
 	"scripts": {
 		"check": "biome check . && tsc --noEmit",
 		"test": "vitest run"
 	},
 	"pi": {
 		"extensions": [
-			"./src/index.ts"
+			"./index.ts"
 		]
 	},
 	"peerDependencies": {

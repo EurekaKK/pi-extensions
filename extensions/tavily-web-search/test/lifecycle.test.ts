@@ -28,7 +28,7 @@ import { registerTavilyWebSearch, type TavilyExtensionDependencies } from "../sr
 import type { TavilyWebSearchConfig } from "../src/types.js";
 
 const DEFAULTS_CONFIG_PATH = fileURLToPath(new URL("../defaults/config.json", import.meta.url));
-const EXTENSION_SOURCE_PATH = "/virtual/tavily-web-search/src/index.ts";
+const EXTENSION_SOURCE_PATH = "/virtual/tavily-web-search/index.ts";
 const BASELINE_TOOL = "read";
 
 type LifecycleHandler = (event: unknown, context: ExtensionContext) => unknown | Promise<unknown>;

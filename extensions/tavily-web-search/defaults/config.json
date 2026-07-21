@@ -13,10 +13,10 @@
 	},
 	"budgets": {
 		"maxToolCallsPerTurn": 4,
-		"maxToolCallsPerAgentRun": 8,
-		"maxToolCallsPerBranchLineage": 40,
-		"maxTavilyCreditsPerAgentRun": 10,
-		"maxTavilyCreditsPerBranchLineage": 20,
+		"maxToolCallsPerAgentRun": 12,
+		"maxToolCallsPerBranchLineage": 60,
+		"maxTavilyCreditsPerAgentRun": 15,
+		"maxTavilyCreditsPerBranchLineage": 100,
 		"maxConcurrency": 2
 	},
 	"cache": {

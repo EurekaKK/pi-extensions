@@ -24,7 +24,7 @@ import {
 import type { RefRecord, TavilyWebSearchConfig } from "./types.js";
 
 const DEFAULTS_CONFIG_PATH = fileURLToPath(new URL("../defaults/config.json", import.meta.url));
-const EXTENSION_SOURCE_PATH = fileURLToPath(import.meta.url);
+const PACKAGE_ENTRY_PATH = fileURLToPath(new URL("../index.ts", import.meta.url));
 
 type PairState = "both" | "neither" | "xor";
 type GuardResult = "ok" | "inactive" | "incomplete" | "collision" | "disabled";
@@ -77,7 +77,7 @@ const DEFAULT_DEPENDENCIES: TavilyExtensionDependencies = Object.freeze({
 	randomId: randomUUID,
 	readApiKey: () => process.env.TAVILY_API_KEY,
 	retryEnabled: true,
-	extensionSourcePath: EXTENSION_SOURCE_PATH,
+	extensionSourcePath: PACKAGE_ENTRY_PATH,
 });
 
 /**

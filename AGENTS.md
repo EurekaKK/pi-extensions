@@ -22,6 +22,7 @@
 ```text
 package.json
 README.md
+index.ts
 src/index.ts
 test/
 tsconfig.json
@@ -29,12 +30,26 @@ biome.json
 ```
 
 - 目录名使用 `kebab-case`。
-- extension 入口必须是 TypeScript，并默认导出 Pi extension 工厂函数。
+- `src/index.ts` 是标准实现入口，必须默认导出 Pi extension 工厂函数。
+- package 根目录必须有薄适配入口 `index.ts`，内容只做 `export { default } from "./src/index.js";`，不得复制
+  实现或产生副作用。Pi 对本地 package 的启动页短名取自入口父目录：直接加载 `src/index.ts` 会错误显示为
+  `src`，加载根 `index.ts` 才会显示 extension 目录名；`package.json.name` 和工厂函数名都不参与这个显示名的
+  计算，不能替代根入口。
 - package 使用 ESM，`package.json` 设置 `"type": "module"`。
 - TypeScript 开启 `strict`；不使用 `any` 绕过类型检查。外部数据先按 `unknown` 接收并校验。
 - Pi 工具参数使用 TypeBox schema；类型导入使用 `import type`。
 - Node.js 版本下限与当前 Pi 一致，设为 `>=22.19.0`。
-- `package.json` 通过 `pi.extensions` 显式声明 `./src/index.ts`，并包含 `pi-package` keyword。
+- `package.json` 必须包含 `pi-package` keyword，并把根适配入口作为唯一 Pi 入口：
+
+  ```json
+  ["./index.ts"]
+  ```
+
+  不得声明 `./src/index.ts`，也不得同时启用根入口与实现入口。用 include/exclude pattern 同时枚举两者的
+  workaround 也不允许：Pi 的 package resolver 与自动发现路径对 manifest pattern 的处理不同，可能导致
+  同一 extension 被加载两次。实现代码仍保留在 `src/index.ts`，由根入口静态转发。
+- 若 `package.json` 使用 `files` allowlist，必须包含根 `index.ts`；`tsconfig.json` 的 `include` 也必须包含
+  `index.ts`，保证发布包不会漏掉适配入口且该文件经过类型检查。
 - npm 发布身份尚未确定前，package 名暂与目录名一致，并设置 `"private": true` 防止误发布。
 - 工具、命令、状态键和其他全局标识必须带 extension 前缀；用户可见 label 不强制带前缀。
 
@@ -83,6 +98,9 @@ npm test       # Vitest 自动化测试
 - 纯文档修改不运行代码验证。
 - 修改根级共享配置或准备发布时，运行全部 workspaces 的完整检查与测试。
 - 发布 extension 前，额外使用本机最新版 Pi 做一次无副作用的真实加载 smoke test。
+- 新 extension 或入口变更的 smoke test 必须从 package 目录加载或安装，不能用 `-e src/index.ts` 代替；应
+  验证 Pi 最终只解析到 `<extension>/index.ts`，并确认启动页 `[Extensions]` 显示 extension 目录名，不是
+  `src`、`dist` 或重复的两个名称。`pi list` 只证明 package 已登记，不能代替此命名验证。
 - 默认测试不得访问真实 `~/.pi`、用户项目、凭据、真实模型、付费 API 或不受控网络服务。
 - 文件测试使用临时目录，Pi API 使用 mock/fake。需要真实环境的集成测试必须单独标记并显式触发。
 - 无法执行应有验证时，必须说明原因和未验证范围，不得声称已经验证。

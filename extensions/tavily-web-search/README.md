@@ -70,10 +70,10 @@ pi remove ./extensions/tavily-web-search
   },
   "budgets": {
     "maxToolCallsPerTurn": 4,
-    "maxToolCallsPerAgentRun": 8,
-    "maxToolCallsPerBranchLineage": 40,
-    "maxTavilyCreditsPerAgentRun": 10,
-    "maxTavilyCreditsPerBranchLineage": 20,
+    "maxToolCallsPerAgentRun": 12,
+    "maxToolCallsPerBranchLineage": 60,
+    "maxTavilyCreditsPerAgentRun": 15,
+    "maxTavilyCreditsPerBranchLineage": 100,
     "maxConcurrency": 2
   },
   "cache": {
@@ -311,6 +311,9 @@ npm run test:integration:tavily
 ```bash
 npm run test:model-eval
 ```
+
+package 根目录的 `index.ts` 是 Pi 启动页名称适配入口，只做默认导出转发；实现及可直接测试的标准入口仍为
+`src/index.ts`。`package.json` 最终只启用根入口，避免本地 package 在 `[Extensions]` 中显示为 `src`。
 
 交付前还应使用临时 agent dir 和 dummy non-empty key 完成本机 Pi 的无付费、零网络加载 smoke test，并
 分别验证成功动态注册完整工具对，以及缺 key 时 session 仍可用、工具未暴露且零网络。

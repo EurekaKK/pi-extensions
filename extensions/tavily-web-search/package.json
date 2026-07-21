@@ -11,6 +11,7 @@
 		"pi-package"
 	],
 	"files": [
+		"index.ts",
 		"src/**/*.ts",
 		"defaults/config.json",
 		"README.md"
@@ -23,7 +24,7 @@
 	},
 	"pi": {
 		"extensions": [
-			"./src/index.ts"
+			"./index.ts"
 		]
 	},
 	"peerDependencies": {

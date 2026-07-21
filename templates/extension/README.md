@@ -40,3 +40,6 @@
 npm run check
 npm test
 ```
+
+package 根目录的 `index.ts` 只负责把默认导出转发到 `src/index.ts`，使 Pi 启动页显示 package 目录名而不是
+`src`；不要把实现逻辑写入根入口。
