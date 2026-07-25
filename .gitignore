@@ -2,3 +2,4 @@ node_modules/
 coverage/
 *.tgz
 docs/
+extensions/sub-agent/test/e2e/

@@ -1,0 +1,44 @@
+{
+	"name": "sub-agent",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"license": "MIT",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"keywords": [
+		"pi-package"
+	],
+	"files": [
+		"index.ts",
+		"src/**/*.ts",
+		"sidecar/**/*.ts",
+		"dist/sidecar/*.js",
+		"README.md"
+	],
+	"scripts": {
+		"build:sidecar": "tsc -p tsconfig.sidecar.json",
+		"check": "biome check . && tsc --noEmit && tsc -p tsconfig.sidecar.json --noEmit",
+		"pretest": "npm run build:sidecar",
+		"test": "vitest run",
+		"prepare": "npm run build:sidecar",
+		"prepack": "npm run build:sidecar"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.4",
+		"@types/node": "^22.20.1",
+		"typescript": "^7.0.2",
+		"vitest": "^4.1.10"
+	}
+}
