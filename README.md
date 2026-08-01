@@ -66,6 +66,7 @@ npm test --workspaces
 | 名称 | 状态 | 说明 | 路径 |
 | --- | --- | --- | --- |
 | `bash-permissions` | experimental | 在 LLM 的内置 bash 调用执行前按三色规则判定风险 | [`extensions/bash-permissions`](./extensions/bash-permissions/) |
+| `goal` | experimental | 创建不可变 session 目标，并由隔离 evaluator 持续推动主 Agent 直至完成或失败 | [`extensions/goal`](./extensions/goal/) |
 | `sub-agent` | experimental | 在同一 Pi session 中运行可复用、纯拉取交付的并行 Child Agent | [`extensions/sub-agent`](./extensions/sub-agent/) |
 | `tavily-web-search` | experimental | 通过 Tavily 搜索公共互联网，并以受限 Extract 检查候选来源 | [`extensions/tavily-web-search`](./extensions/tavily-web-search/) |
 | `todo` | experimental | 为对话分支提供可持久化的多步骤 Todo、进度展示与工具调用提醒 | [`extensions/todo`](./extensions/todo/) |
