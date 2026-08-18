@@ -18,9 +18,8 @@
 	],
 	"scripts": {
 		"check": "biome check . && tsc --noEmit",
-		"test": "vitest run --exclude \"test/integration/**\" --exclude \"test/model-eval/**\"",
-		"test:integration:tavily": "vitest run test/integration",
-		"test:model-eval": "vitest run test/model-eval"
+		"test": "vitest run --exclude \"test/integration/**\"",
+		"test:integration:tavily": "vitest run test/integration"
 	},
 	"pi": {
 		"extensions": [

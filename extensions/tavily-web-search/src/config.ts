@@ -1,271 +1,218 @@
-import { constants as fileConstants } from "node:fs";
-import { copyFile, lstat, mkdir, readFile } from "node:fs/promises";
-import { dirname } from "node:path";
-import { MAX_CONFIG_BYTES } from "./constants.js";
-import { DomainPatternError, parseDomainPattern } from "./domains.js";
-import type { RetrievalDepth, TavilyWebSearchConfig } from "./types.js";
+import { constants as fsConstants } from "node:fs";
+import { chmod, lstat, mkdir, open, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+	CONFIG_DIRECTORY_MODE,
+	CONFIG_DIRECTORY_NAME,
+	CONFIG_FILE_MODE,
+	CONFIG_FILE_NAME,
+	CONFIG_VERSION,
+	MAX_CONFIG_BYTES,
+} from "./constants.js";
 
-export class ConfigurationError extends Error {
-	readonly path: string;
-	readonly field: string;
+export type SearchDepth = "basic" | "advanced" | "fast" | "ultra-fast";
+export type ExtractDepth = "basic" | "advanced";
 
-	constructor(path: string, field: string, reason: string) {
-		super(`${path}: ${field}: ${reason}`);
-		this.name = "ConfigurationError";
-		this.path = path;
-		this.field = field;
-	}
+export interface TavilyConfigV1 {
+	readonly version: 1;
+	readonly searchDepth: SearchDepth;
+	readonly extractDepth: ExtractDepth;
+	readonly maxResults: number;
+	readonly searchTimeoutMs: number;
+	readonly extractTimeoutMs: number;
 }
 
-export interface LoadedConfig {
-	readonly config: TavilyWebSearchConfig;
+export type FileMutationQueue = <T>(filePath: string, mutation: () => Promise<T>) => Promise<T>;
+
+export interface InitializeTavilyConfigOptions {
+	readonly agentDir: string;
+	readonly withFileMutationQueue: FileMutationQueue;
+}
+
+export interface InitializedTavilyConfig {
+	readonly configDir: string;
+	readonly configPath: string;
+	readonly config: TavilyConfigV1;
 	readonly created: boolean;
 }
 
-export async function loadOrCreateConfig(
-	configPath: string,
-	defaultsConfigPath: string,
-	withFileMutationQueue: <T>(path: string, mutation: () => Promise<T>) => Promise<T>,
-): Promise<LoadedConfig> {
-	return withFileMutationQueue(configPath, async () => {
-		await mkdir(dirname(configPath), { recursive: true });
-		let created = false;
-		try {
-			await lstat(configPath);
-		} catch (error) {
-			if (!isNodeError(error) || error.code !== "ENOENT") throw configIoError(configPath, error);
-			try {
-				await copyFile(defaultsConfigPath, configPath, fileConstants.COPYFILE_EXCL);
-				created = true;
-			} catch (copyError) {
-				if (!isNodeError(copyError) || copyError.code !== "EEXIST") throw configIoError(configPath, copyError);
-			}
-		}
+export const DEFAULT_CONFIG: TavilyConfigV1 = Object.freeze({
+	version: CONFIG_VERSION,
+	searchDepth: "basic",
+	extractDepth: "basic",
+	maxResults: 5,
+	searchTimeoutMs: 40_000,
+	extractTimeoutMs: 40_000,
+});
 
-		const before = await safeLstat(configPath);
-		assertOrdinaryFile(configPath, before);
-		assertFileSize(configPath, before.size);
-		let bytes: Uint8Array;
-		try {
-			bytes = await readFile(configPath);
-		} catch (error) {
-			throw configIoError(configPath, error);
-		}
-		if (bytes.byteLength > MAX_CONFIG_BYTES) throw new ConfigurationError(configPath, "$", "file exceeds 64 KiB");
-		const after = await safeLstat(configPath);
-		assertOrdinaryFile(configPath, after);
-		assertFileSize(configPath, after.size);
-		if (before.dev !== after.dev || before.ino !== after.ino) {
-			throw new ConfigurationError(configPath, "$", "file changed while it was being read");
-		}
-		if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
-			throw new ConfigurationError(configPath, "$", "UTF-8 BOM is not allowed");
-		}
-		let text: string;
-		try {
-			text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-		} catch {
-			throw new ConfigurationError(configPath, "$", "file is not valid UTF-8");
-		}
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(text) as unknown;
-		} catch {
-			throw new ConfigurationError(configPath, "$", "file is not valid strict JSON");
-		}
-		return Object.freeze({ config: validateConfig(parsed, configPath), created });
-	});
-}
+const PACKAGE_DEFAULT_CONFIG_PATH = join(dirname(fileURLToPath(import.meta.url)), "../defaults/config.json");
+const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
+const SEARCH_DEPTHS: readonly SearchDepth[] = ["basic", "advanced", "fast", "ultra-fast"];
+const EXTRACT_DEPTHS: readonly ExtractDepth[] = ["basic", "advanced"];
+const CONFIG_KEYS = ["extractDepth", "extractTimeoutMs", "maxResults", "searchDepth", "searchTimeoutMs", "version"];
 
-export function validateConfig(value: unknown, path = "config.json"): TavilyWebSearchConfig {
-	const root = requireRecord(value, path, "$", ["version", "domains", "retrieval", "budgets", "cache"]);
-	if (root.version !== 1) throw new ConfigurationError(path, "version", "must equal 1");
+export class TavilyConfigurationError extends Error {
+	readonly configPath: string;
 
-	const domains = requireRecord(root.domains, path, "domains", ["allow", "deny"]);
-	const allow = validateDomainList(domains.allow, path, "domains.allow");
-	const deny = validateDomainList(domains.deny, path, "domains.deny");
-
-	const retrieval = requireRecord(root.retrieval, path, "retrieval", [
-		"searchDepth",
-		"extractDepth",
-		"maxSearchResults",
-		"maxOutputCharacters",
-		"maxDocumentBytes",
-	]);
-	const searchDepth = requireDepth(retrieval.searchDepth, path, "retrieval.searchDepth");
-	const extractDepth = requireDepth(retrieval.extractDepth, path, "retrieval.extractDepth");
-	const maxSearchResults = requireInteger(retrieval.maxSearchResults, path, "retrieval.maxSearchResults", 1, 10);
-	const maxOutputCharacters = requireInteger(
-		retrieval.maxOutputCharacters,
-		path,
-		"retrieval.maxOutputCharacters",
-		2_000,
-		12_000,
-	);
-	const maxDocumentBytes = requireInteger(
-		retrieval.maxDocumentBytes,
-		path,
-		"retrieval.maxDocumentBytes",
-		32 * 1_024,
-		256 * 1_024,
-	);
-
-	const budgets = requireRecord(root.budgets, path, "budgets", [
-		"maxToolCallsPerTurn",
-		"maxToolCallsPerAgentRun",
-		"maxToolCallsPerBranchLineage",
-		"maxTavilyCreditsPerAgentRun",
-		"maxTavilyCreditsPerBranchLineage",
-		"maxConcurrency",
-	]);
-	const maxToolCallsPerTurn = requireInteger(budgets.maxToolCallsPerTurn, path, "budgets.maxToolCallsPerTurn", 1, 16);
-	const maxToolCallsPerAgentRun = requireInteger(
-		budgets.maxToolCallsPerAgentRun,
-		path,
-		"budgets.maxToolCallsPerAgentRun",
-		maxToolCallsPerTurn,
-		64,
-	);
-	const maxToolCallsPerBranchLineage = requireInteger(
-		budgets.maxToolCallsPerBranchLineage,
-		path,
-		"budgets.maxToolCallsPerBranchLineage",
-		maxToolCallsPerAgentRun,
-		500,
-	);
-	const worstAttemptCredits = searchDepth === "advanced" || extractDepth === "advanced" ? 2 : 1;
-	const maxTavilyCreditsPerAgentRun = requireInteger(
-		budgets.maxTavilyCreditsPerAgentRun,
-		path,
-		"budgets.maxTavilyCreditsPerAgentRun",
-		worstAttemptCredits,
-		100,
-	);
-	const maxTavilyCreditsPerBranchLineage = requireInteger(
-		budgets.maxTavilyCreditsPerBranchLineage,
-		path,
-		"budgets.maxTavilyCreditsPerBranchLineage",
-		maxTavilyCreditsPerAgentRun,
-		1_000,
-	);
-	const maxConcurrency = requireInteger(budgets.maxConcurrency, path, "budgets.maxConcurrency", 1, 8);
-
-	const cache = requireRecord(root.cache, path, "cache", ["searchTtlSeconds", "extractTtlSeconds", "maxBytes"]);
-	const searchTtlSeconds = requireInteger(cache.searchTtlSeconds, path, "cache.searchTtlSeconds", 0, 3_600);
-	const extractTtlSeconds = requireInteger(cache.extractTtlSeconds, path, "cache.extractTtlSeconds", 60, 3_600);
-	const maxBytes = requireInteger(cache.maxBytes, path, "cache.maxBytes", 1 * 1_024 * 1_024, 16 * 1_024 * 1_024);
-	if (maxBytes < maxDocumentBytes) {
-		throw new ConfigurationError(path, "cache.maxBytes", "must be at least retrieval.maxDocumentBytes");
+	constructor(configPath: string, reason: string) {
+		super(`${configPath}: ${reason}`);
+		this.name = "TavilyConfigurationError";
+		this.configPath = configPath;
 	}
-
-	return deepFreeze({
-		version: 1,
-		domains: { allow, deny },
-		retrieval: { searchDepth, extractDepth, maxSearchResults, maxOutputCharacters, maxDocumentBytes },
-		budgets: {
-			maxToolCallsPerTurn,
-			maxToolCallsPerAgentRun,
-			maxToolCallsPerBranchLineage,
-			maxTavilyCreditsPerAgentRun,
-			maxTavilyCreditsPerBranchLineage,
-			maxConcurrency,
-		},
-		cache: { searchTtlSeconds, extractTtlSeconds, maxBytes },
-	});
-}
-
-function validateDomainList(value: unknown, path: string, field: string): readonly string[] {
-	if (!Array.isArray(value)) throw new ConfigurationError(path, field, "must be an array");
-	if (value.length > 200) throw new ConfigurationError(path, field, "must contain at most 200 patterns");
-	const result: string[] = [];
-	const seen = new Set<string>();
-	for (let index = 0; index < value.length; index += 1) {
-		const item = value[index];
-		if (typeof item !== "string") throw new ConfigurationError(path, `${field}[${index}]`, "must be a string");
-		let canonical: string;
-		try {
-			canonical = parseDomainPattern(item).canonical;
-		} catch (error) {
-			const reason = error instanceof DomainPatternError ? error.message : "is invalid";
-			throw new ConfigurationError(path, `${field}[${index}]`, reason);
-		}
-		if (seen.has(canonical))
-			throw new ConfigurationError(path, `${field}[${index}]`, "duplicates a normalized pattern");
-		seen.add(canonical);
-		result.push(canonical);
-	}
-	return Object.freeze(result);
-}
-
-function requireRecord(
-	value: unknown,
-	path: string,
-	field: string,
-	allowedKeys: readonly string[],
-): Record<string, unknown> {
-	if (!isRecord(value)) throw new ConfigurationError(path, field, "must be an object");
-	const allowed = new Set(allowedKeys);
-	for (const key of Object.keys(value)) {
-		if (!allowed.has(key)) throw new ConfigurationError(path, `${field}.${key}`.replace(/^\$\./u, ""), "unknown field");
-	}
-	for (const key of allowedKeys) {
-		if (!Object.hasOwn(value, key)) {
-			throw new ConfigurationError(path, `${field}.${key}`.replace(/^\$\./u, ""), "field is required");
-		}
-	}
-	return value;
-}
-
-function requireDepth(value: unknown, path: string, field: string): RetrievalDepth {
-	if (value !== "basic" && value !== "advanced") {
-		throw new ConfigurationError(path, field, 'must be "basic" or "advanced"');
-	}
-	return value;
-}
-
-function requireInteger(value: unknown, path: string, field: string, minimum: number, maximum: number): number {
-	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum || value > maximum) {
-		throw new ConfigurationError(path, field, `must be a safe integer from ${minimum} through ${maximum}`);
-	}
-	return value;
-}
-
-function assertOrdinaryFile(path: string, stats: Awaited<ReturnType<typeof lstat>>): void {
-	if (!stats.isFile() || stats.isSymbolicLink()) throw new ConfigurationError(path, "$", "must be an ordinary file");
-}
-
-function assertFileSize(path: string, size: number | bigint): void {
-	if (typeof size !== "number" || !Number.isSafeInteger(size) || size > MAX_CONFIG_BYTES) {
-		throw new ConfigurationError(path, "$", "file exceeds 64 KiB");
-	}
-}
-
-async function safeLstat(path: string): Promise<Awaited<ReturnType<typeof lstat>>> {
-	try {
-		return await lstat(path);
-	} catch (error) {
-		throw configIoError(path, error);
-	}
-}
-
-function configIoError(path: string, _error: unknown): ConfigurationError {
-	return new ConfigurationError(path, "$", "file could not be accessed safely");
-}
-
-function isNodeError(value: unknown): value is NodeJS.ErrnoException {
-	return value instanceof Error && "code" in value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const prototype = Object.getPrototypeOf(value);
+	return prototype === Object.prototype || prototype === null;
 }
 
-function deepFreeze(config: TavilyWebSearchConfig): TavilyWebSearchConfig {
-	Object.freeze(config.domains.allow);
-	Object.freeze(config.domains.deny);
-	Object.freeze(config.domains);
-	Object.freeze(config.retrieval);
-	Object.freeze(config.budgets);
-	Object.freeze(config.cache);
-	return Object.freeze(config);
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+	const actual = Object.keys(value).sort();
+	const keys = [...expected].sort();
+	return (
+		Object.getOwnPropertySymbols(value).length === 0 &&
+		actual.length === keys.length &&
+		actual.every((key, index) => key === keys[index])
+	);
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+	return error instanceof Error && "code" in error;
+}
+
+function describeIoError(error: unknown): string {
+	if (isNodeError(error) && typeof error.code === "string") return `filesystem error ${error.code}`;
+	return "filesystem operation failed";
+}
+
+function fail(configPath: string, reason: string): never {
+	throw new TavilyConfigurationError(configPath, reason);
+}
+
+function isSearchDepth(value: unknown): value is SearchDepth {
+	return typeof value === "string" && SEARCH_DEPTHS.includes(value as SearchDepth);
+}
+
+function isExtractDepth(value: unknown): value is ExtractDepth {
+	return typeof value === "string" && EXTRACT_DEPTHS.includes(value as ExtractDepth);
+}
+
+export function validateTavilyConfig(value: unknown, configPath: string): TavilyConfigV1 {
+	if (!isRecord(value) || !hasExactKeys(value, CONFIG_KEYS)) {
+		fail(configPath, "top-level config contains unknown or missing fields");
+	}
+	if (value.version !== CONFIG_VERSION) fail(configPath, `version must equal ${CONFIG_VERSION}`);
+	if (!isSearchDepth(value.searchDepth)) fail(configPath, "searchDepth must be basic, advanced, fast, or ultra-fast");
+	if (!isExtractDepth(value.extractDepth)) fail(configPath, "extractDepth must be basic or advanced");
+	if (
+		typeof value.maxResults !== "number" ||
+		!Number.isSafeInteger(value.maxResults) ||
+		value.maxResults < 1 ||
+		value.maxResults > 20
+	) {
+		fail(configPath, "maxResults must be a safe integer from 1 to 20");
+	}
+	if (
+		typeof value.searchTimeoutMs !== "number" ||
+		!Number.isSafeInteger(value.searchTimeoutMs) ||
+		value.searchTimeoutMs < 1
+	) {
+		fail(configPath, "searchTimeoutMs must be a positive safe integer");
+	}
+	if (
+		typeof value.extractTimeoutMs !== "number" ||
+		!Number.isSafeInteger(value.extractTimeoutMs) ||
+		value.extractTimeoutMs < 1
+	) {
+		fail(configPath, "extractTimeoutMs must be a positive safe integer");
+	}
+	return Object.freeze({
+		version: CONFIG_VERSION,
+		searchDepth: value.searchDepth,
+		extractDepth: value.extractDepth,
+		maxResults: value.maxResults,
+		searchTimeoutMs: value.searchTimeoutMs,
+		extractTimeoutMs: value.extractTimeoutMs,
+	});
+}
+
+async function readStrictJson(configPath: string): Promise<unknown> {
+	let before: Awaited<ReturnType<typeof lstat>>;
+	try {
+		before = await lstat(configPath);
+	} catch (error) {
+		fail(configPath, `cannot inspect config (${describeIoError(error)})`);
+	}
+	if (!before.isFile()) fail(configPath, "config path must be a regular file");
+	if (before.size > MAX_CONFIG_BYTES) fail(configPath, `file exceeds ${MAX_CONFIG_BYTES} UTF-8 bytes`);
+
+	let bytes: Uint8Array;
+	try {
+		bytes = await readFile(configPath);
+	} catch (error) {
+		fail(configPath, `cannot read config (${describeIoError(error)})`);
+	}
+	if (bytes.byteLength > MAX_CONFIG_BYTES) fail(configPath, `file exceeds ${MAX_CONFIG_BYTES} UTF-8 bytes`);
+
+	let after: Awaited<ReturnType<typeof lstat>>;
+	try {
+		after = await lstat(configPath);
+	} catch (error) {
+		fail(configPath, `cannot re-check config (${describeIoError(error)})`);
+	}
+	if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size) {
+		fail(configPath, "config changed while it was being read");
+	}
+
+	let text: string;
+	try {
+		text = TEXT_DECODER.decode(bytes);
+	} catch {
+		fail(configPath, "file is not valid UTF-8");
+	}
+	try {
+		return JSON.parse(text) as unknown;
+	} catch {
+		return fail(configPath, "file is not strict JSON");
+	}
+}
+
+async function createDefaultConfig(configPath: string): Promise<boolean> {
+	let packaged: string;
+	try {
+		packaged = await readFile(PACKAGE_DEFAULT_CONFIG_PATH, "utf8");
+	} catch (error) {
+		return fail(configPath, `cannot read package default config (${describeIoError(error)})`);
+	}
+	let handle: Awaited<ReturnType<typeof open>> | undefined;
+	try {
+		handle = await open(configPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, CONFIG_FILE_MODE);
+		await handle.writeFile(packaged, "utf8");
+		await handle.sync();
+		return true;
+	} catch (error) {
+		if (isNodeError(error) && error.code === "EEXIST") return false;
+		return fail(configPath, `cannot create default config (${describeIoError(error)})`);
+	} finally {
+		await handle?.close();
+	}
+}
+
+export async function initializeTavilyConfig(options: InitializeTavilyConfigOptions): Promise<InitializedTavilyConfig> {
+	const configDir = join(options.agentDir, CONFIG_DIRECTORY_NAME);
+	const configPath = join(configDir, CONFIG_FILE_NAME);
+	return options.withFileMutationQueue(configPath, async () => {
+		try {
+			await mkdir(configDir, { recursive: true, mode: CONFIG_DIRECTORY_MODE });
+			await chmod(configDir, CONFIG_DIRECTORY_MODE);
+		} catch (error) {
+			fail(configPath, `cannot prepare config directory (${describeIoError(error)})`);
+		}
+		const created = await createDefaultConfig(configPath);
+		const parsed = await readStrictJson(configPath);
+		const config = validateTavilyConfig(parsed, configPath);
+		return Object.freeze({ configDir, configPath, config, created });
+	});
 }

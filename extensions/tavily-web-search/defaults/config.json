@@ -1,27 +1,8 @@
 {
 	"version": 1,
-	"domains": {
-		"allow": [],
-		"deny": []
-	},
-	"retrieval": {
-		"searchDepth": "basic",
-		"extractDepth": "basic",
-		"maxSearchResults": 5,
-		"maxOutputCharacters": 12000,
-		"maxDocumentBytes": 262144
-	},
-	"budgets": {
-		"maxToolCallsPerTurn": 4,
-		"maxToolCallsPerAgentRun": 12,
-		"maxToolCallsPerBranchLineage": 60,
-		"maxTavilyCreditsPerAgentRun": 15,
-		"maxTavilyCreditsPerBranchLineage": 100,
-		"maxConcurrency": 2
-	},
-	"cache": {
-		"searchTtlSeconds": 300,
-		"extractTtlSeconds": 900,
-		"maxBytes": 4194304
-	}
+	"searchDepth": "basic",
+	"extractDepth": "basic",
+	"maxResults": 5,
+	"searchTimeoutMs": 40000,
+	"extractTimeoutMs": 40000
 }
