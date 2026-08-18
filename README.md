@@ -67,7 +67,7 @@ npm test --workspaces
 | --- | --- | --- | --- |
 | `bash-permissions` | experimental | 在 LLM 的内置 bash 调用执行前按三色规则判定风险 | [`extensions/bash-permissions`](./extensions/bash-permissions/) |
 | `context-management` | experimental | 编译主动上下文、预生成滚动 Checkpoint，并提供 Evidence 与 Repository Memory 召回 | [`extensions/context-management`](./extensions/context-management/) |
-| `goal` | experimental | 创建不可变 session 目标，并由隔离 evaluator 持续推动主 Agent 直至完成或失败 | [`extensions/goal`](./extensions/goal/) |
+| `goal` | experimental | 通过模型工具管理 session Goal，并由 Goal Round Driver 自动续跑 active goal | [`extensions/goal`](./extensions/goal/) |
 | `sub-agent` | experimental | 在父 Pi 进程内运行 spawn/fork 子 Agent，支持后台 continuable 会话、report 与结算通知 | [`extensions/sub-agent`](./extensions/sub-agent/) |
 | `tavily-web-search` | experimental | 通过 Tavily 搜索公共互联网，并以受限 Extract 检查候选来源 | [`extensions/tavily-web-search`](./extensions/tavily-web-search/) |
 | `todo` | experimental | 通过 `todo_write` 每次全量替换模型任务列表，并提供按轮次清空的计划条 | [`extensions/todo`](./extensions/todo/) |

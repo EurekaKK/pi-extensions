@@ -1,24 +1,31 @@
 import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import packageEntry from "../index.js";
-import sourceEntry from "../src/index.js";
+import packageFactory from "../index.js";
+import implementationFactory from "../src/index.js";
 
-const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const PACKAGE_PATH = fileURLToPath(new URL("../package.json", import.meta.url));
+const ROOT_ENTRY_PATH = fileURLToPath(new URL("../index.ts", import.meta.url));
+const TSCONFIG_PATH = fileURLToPath(new URL("../tsconfig.json", import.meta.url));
 
-describe("goal package", () => {
-	it("exports the source factory through the root naming adapter", () => {
-		expect(packageEntry).toBe(sourceEntry);
-		expect(packageEntry).toBeTypeOf("function");
+describe("goal v2 package boundary", () => {
+	it("re-exports the implementation factory from the package root", () => {
+		expect(packageFactory).toBe(implementationFactory);
 	});
 
-	it("declares only the package root as its Pi entry", async () => {
-		const manifest = JSON.parse(await readFile(resolve(packageDirectory, "package.json"), "utf8")) as {
-			pi?: { extensions?: unknown };
-			files?: unknown;
+	it("publishes only the root Pi entry", async () => {
+		const manifest = JSON.parse(await readFile(PACKAGE_PATH, "utf8")) as {
+			readonly files: readonly string[];
+			readonly pi: { readonly extensions: readonly string[] };
 		};
-		expect(manifest.pi?.extensions).toEqual(["./index.ts"]);
+		const tsconfig = JSON.parse(await readFile(TSCONFIG_PATH, "utf8")) as {
+			readonly include: readonly string[];
+		};
+		const rootEntry = await readFile(ROOT_ENTRY_PATH, "utf8");
+
+		expect(manifest.pi.extensions).toEqual(["./index.ts"]);
 		expect(manifest.files).toContain("index.ts");
+		expect(tsconfig.include).toContain("index.ts");
+		expect(rootEntry).toBe('export { default } from "./src/index.js";\n');
 	});
 });

@@ -1,110 +1,109 @@
 import { describe, expect, it } from "vitest";
 import {
-	beginActiveElapsed,
-	createGoalCreatedEvent,
-	createGoalEvaluationEntry,
-	foldActiveElapsed,
-	parseGoalEvaluationReport,
-	readActiveElapsed,
-	summarizeGoalText,
+	applyGoalChange,
+	applyGoalRound,
+	emptyGoalState,
+	type GoalChange,
+	parseGoalChange,
+	parseGoalRound,
 } from "../src/domain.js";
 
-describe("goal domain primitives", () => {
-	it("mechanically collapses all goal whitespace without rewriting content", () => {
-		expect(summarizeGoalText("  ship\n\t the\u00a0feature  ")).toBe("ship the feature");
+function createChange(): GoalChange {
+	return {
+		kind: "goal/change",
+		version: 1,
+		operation: "create",
+		goal: { id: "goal-1", revision: 1, objective: "ship it", phase: "active", maxGoalRounds: 3 },
+		roundsStarted: 0,
+		createdAt: 10,
+		updatedAt: 10,
+	};
+}
+
+describe("goal v2 domain", () => {
+	it("folds create, pause, resume, complete and clear transitions", () => {
+		const state = emptyGoalState();
+		applyGoalChange(state, createChange());
+		expect(state.goal?.phase).toBe("active");
+
+		applyGoalChange(state, {
+			kind: "goal/change",
+			version: 1,
+			operation: "pause",
+			goal: { id: "goal-1", revision: 2, objective: "ship it", phase: "paused", maxGoalRounds: 3 },
+			roundsStarted: 0,
+			createdAt: 10,
+			updatedAt: 11,
+		});
+		expect(state.goal?.phase).toBe("paused");
+
+		applyGoalChange(state, {
+			kind: "goal/change",
+			version: 1,
+			operation: "resume",
+			goal: { id: "goal-1", revision: 3, objective: "ship it", phase: "active", maxGoalRounds: 3 },
+			roundsStarted: 0,
+			createdAt: 10,
+			updatedAt: 12,
+		});
+		expect(state.goal?.phase).toBe("active");
+
+		applyGoalChange(state, {
+			kind: "goal/change",
+			version: 1,
+			operation: "complete",
+			goal: { id: "goal-1", revision: 4, objective: "ship it", phase: "complete", maxGoalRounds: 3 },
+			roundsStarted: 0,
+			createdAt: 10,
+			updatedAt: 13,
+		});
+		expect(state.goal?.phase).toBe("complete");
+
+		applyGoalChange(state, {
+			kind: "goal/change",
+			version: 1,
+			operation: "clear",
+			cleared: { id: "goal-1", revision: 5 },
+			clearedAt: 14,
+		});
+		expect(state.goal).toBeUndefined();
+		expect(state.lastRef).toEqual({ id: "goal-1", revision: 5 });
 	});
 
-	it("strictly validates discriminated evaluation reports", () => {
-		const valid = parseGoalEvaluationReport({
-			decision: "continue",
-			progress: "Inspected the failing test.",
-			reason: "A concrete fix remains.",
-			next_action: "Patch the parser.",
-			evidence: ["test/parser.test.ts fails"],
-		});
-		expect(valid).toEqual({
-			decision: "continue",
-			progress: "Inspected the failing test.",
-			reason: "A concrete fix remains.",
-			next_action: "Patch the parser.",
-			evidence: ["test/parser.test.ts fails"],
-		});
-		expect(Object.isFrozen(valid)).toBe(true);
-		expect(Object.isFrozen(valid?.evidence)).toBe(true);
+	it("folds admitted goal rounds in order", () => {
+		const state = emptyGoalState();
+		applyGoalChange(state, createChange());
+		applyGoalRound(state, { version: 1, goalId: "goal-1", revision: 1, round: 1 });
+		applyGoalRound(state, { version: 1, goalId: "goal-1", revision: 1, round: 2 });
+		expect(state.roundsStarted).toBe(2);
+		expect(() => applyGoalRound(state, { version: 1, goalId: "goal-1", revision: 1, round: 4 })).toThrow();
+	});
 
-		expect(parseGoalEvaluationReport({ ...valid, next_action: null })).toBeNull();
-		expect(parseGoalEvaluationReport({ ...valid, unexpected: true })).toBeNull();
-		expect(parseGoalEvaluationReport({ ...valid, evidence: [] })).toBeNull();
-		expect(
-			parseGoalEvaluationReport({
-				...valid,
-				decision: "complete",
-				next_action: "one more task",
+	it("rejects stale revisions and invalid transitions", () => {
+		const state = emptyGoalState();
+		applyGoalChange(state, createChange());
+		expect(() =>
+			applyGoalChange(state, {
+				kind: "goal/change",
+				version: 1,
+				operation: "pause",
+				goal: { id: "goal-1", revision: 3, objective: "ship it", phase: "paused", maxGoalRounds: 3 },
+				roundsStarted: 0,
+				createdAt: 10,
+				updatedAt: 11,
 			}),
-		).toBeNull();
-		expect(
-			parseGoalEvaluationReport({
-				...valid,
-				decision: "fail",
-				next_action: null,
-			}),
-		).toMatchObject({ decision: "fail", next_action: null });
+		).toThrow(/advance/);
 	});
 
-	it("counts report bounds as Unicode code points", () => {
-		const report = {
-			decision: "continue",
-			progress: "ok",
-			reason: "reason",
-			next_action: "😀".repeat(2_000),
-			evidence: ["evidence"],
-		} as const;
-		expect(parseGoalEvaluationReport(report)).not.toBeNull();
-		expect(parseGoalEvaluationReport({ ...report, next_action: `${report.next_action}😀` })).toBeNull();
-	});
-
-	it("creates immutable creation and evaluation entries while preserving exact goal text", () => {
-		const created = createGoalCreatedEvent({
-			ownerSessionId: "session-1",
-			goalId: "goal-1",
-			sequence: 1,
-			timestamp: 100,
-			activeElapsedMs: 0,
-			goalText: "  exact\ntext  ",
-			creationAnchorEntryId: "anchor-1",
+	it("parses change and round entries", () => {
+		expect(parseGoalChange(createChange())).toMatchObject({ status: "valid" });
+		expect(parseGoalChange({ kind: "goal/change", version: 1 })).toEqual({ status: "invalid" });
+		expect(parseGoalRound({ version: 1, goalId: "g", revision: 1, round: 1 })).toEqual({
+			version: 1,
+			goalId: "g",
+			revision: 1,
+			round: 1,
 		});
-		expect(created.goalText).toBe("  exact\ntext  ");
-		expect(created.goalSummary).toBe("exact text");
-		expect(created.createdAt).toBe(100);
-
-		const evaluation = createGoalEvaluationEntry({
-			ownerSessionId: "session-1",
-			goalId: "goal-1",
-			sequence: 4,
-			timestamp: 140,
-			activeElapsedMs: 40,
-			evaluationId: "evaluation-1",
-			evaluationNumber: 1,
-			evaluationAttemptId: "attempt-1",
-			precedingMainRunId: "run-1",
-			report: {
-				decision: "complete",
-				progress: "done",
-				reason: "verified",
-				next_action: null,
-				evidence: ["tests pass"],
-			},
-		});
-		expect(evaluation.report.decision).toBe("complete");
-		expect(Object.isFrozen(evaluation)).toBe(true);
-	});
-
-	it("accumulates only an explicit monotonic active segment", () => {
-		const running = beginActiveElapsed(1_000, 50);
-		expect(readActiveElapsed(running, 275)).toBe(1_225);
-		const folded = foldActiveElapsed(running, 275);
-		expect(folded).toEqual({ activeElapsedMs: 1_225, segmentStartedAt: null });
-		expect(readActiveElapsed(folded, 9_999)).toBe(1_225);
-		expect(readActiveElapsed(running, 25)).toBe(1_000);
+		expect(parseGoalRound({ version: 1, goalId: "g", revision: 0, round: 1 })).toBeNull();
 	});
 });
