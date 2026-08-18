@@ -1,107 +1,71 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import { createEmptyRuntimeState, createTodoList, type RuntimeState, updateTodos } from "../src/domain.js";
+import { TODO_WIDGET_KEY } from "../src/constants.js";
 import { buildTodoWidgetLines, projectTodoWidget, TodoWidgetComponent } from "../src/widget.js";
 
-function createState(): RuntimeState {
-	const created = createTodoList(createEmptyRuntimeState(), [
-		"done",
-		"working",
-		"pending-a",
-		"cancelled",
-		"pending-b",
-		"done-too",
-		"pending-c",
-	]);
-	if (!created.ok) throw new Error(created.error.message);
-	const updated = updateTodos(created.state, [
-		{ id: 1, status: "completed" },
-		{ id: 2, status: "in_progress" },
-		{ id: 4, status: "cancelled", reason: "covered elsewhere" },
-		{ id: 6, status: "completed" },
-	]);
-	if (!updated.ok) throw new Error(updated.error.message);
-	return updated.state;
-}
-
-function fakeTheme(): Theme {
-	return {
-		fg: (_color: string, text: string) => text,
-		bold: (text: string) => text,
-		strikethrough: (text: string) => text,
-	} as unknown as Theme;
-}
-
-function fakeContext(mode: ExtensionContext["mode"], hasUI: boolean) {
-	const setWidget = vi.fn();
-	return {
-		context: {
-			mode,
-			hasUI,
-			ui: { setWidget },
-		} as unknown as ExtensionContext,
-		setWidget,
-	};
-}
-
-describe("Todo status widget", () => {
-	it("orders by status then ID, displays five items, and reports hidden items", () => {
-		const list = createState().activeList;
-		if (list === null) throw new Error("Expected an active list.");
-
-		expect(buildTodoWidgetLines(list)).toEqual([
-			"Todos · 2 completed · 1 cancelled · 4 unresolved · … +2",
-			"◐ #2 working",
-			"○ #3 pending-a",
-			"○ #5 pending-b",
-			"○ #7 pending-c",
-			"✓ #1 done",
+describe("Todo v2 widget", () => {
+	it("orders in_progress, pending, completed and bounds to five items", () => {
+		const lines = buildTodoWidgetLines([
+			{ content: "c1", status: "completed" },
+			{ content: "p1", status: "pending" },
+			{ content: "i1", status: "in_progress" },
+			{ content: "c2", status: "completed" },
+			{ content: "p2", status: "pending" },
+			{ content: "i2", status: "in_progress" },
 		]);
+
+		expect(lines[0]).toBe("Todos · 2 in progress · 2 pending · 2 completed · … +1");
+		expect(lines.slice(1)).toEqual(["◐ i1", "◐ i2", "○ p1", "○ p2", "✓ c1"]);
 	});
 
-	it("shows the cancellation reason when a cancelled row is visible", () => {
-		const created = createTodoList(createEmptyRuntimeState(), ["open", "obsolete"]);
-		if (!created.ok) throw new Error(created.error.message);
-		const updated = updateTodos(created.state, [{ id: 2, status: "cancelled", reason: "not needed" }]);
-		if (!updated.ok || updated.state.activeList === null) throw new Error("Expected an active list.");
+	it("renders a width-truncated component", () => {
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+			strikethrough: (text: string) => text,
+		} as unknown as Theme;
+		const component = new TodoWidgetComponent([{ content: "work", status: "in_progress" }], theme);
 
-		expect(buildTodoWidgetLines(updated.state.activeList)).toContain("– #2 obsolete：not needed");
-		expect(buildTodoWidgetLines(updated.state.activeList).join("\n")).not.toContain("reminder");
+		const [header, item] = component.render(20);
+		expect(header).toMatch(/^Todos · 1 in prog/);
+		expect(item).toBe("◐ work");
 	});
 
-	it("keeps every TUI row within a narrow width", () => {
-		const list = createState().activeList;
-		if (list === null) throw new Error("Expected an active list.");
-		const component = new TodoWidgetComponent(list, fakeTheme());
+	it("projects a TUI component and RPC lines, and ignores non-UI modes", () => {
+		const setWidget = vi.fn();
+		const base = { hasUI: true, ui: { setWidget } } as unknown as ExtensionContext;
+		const list = [{ content: "work", status: "pending" }] as const;
 
-		const lines = component.render(16);
-		expect(lines).toHaveLength(6);
-		expect(lines.every((line) => visibleWidth(line) <= 16)).toBe(true);
+		projectTodoWidget({ ...base, mode: "tui" } as ExtensionContext, list);
+		expect(setWidget).toHaveBeenCalledWith(TODO_WIDGET_KEY, expect.any(Function));
+
+		setWidget.mockClear();
+		projectTodoWidget({ ...base, mode: "rpc" } as ExtensionContext, list);
+		expect(setWidget).toHaveBeenCalledWith(TODO_WIDGET_KEY, [
+			"Todos · 0 in progress · 1 pending · 0 completed",
+			"○ work",
+		]);
+
+		setWidget.mockClear();
+		projectTodoWidget({ ...base, mode: "print" } as ExtensionContext, list);
+		expect(setWidget).not.toHaveBeenCalled();
+
+		setWidget.mockClear();
+		projectTodoWidget({ ...base, mode: "json", hasUI: false } as ExtensionContext, list);
+		expect(setWidget).not.toHaveBeenCalled();
 	});
 
-	it("uses a component factory in TUI, plain lines in RPC, and no UI in headless modes", () => {
-		const list = createState().activeList;
-		if (list === null) throw new Error("Expected an active list.");
+	it("clears the widget for null and empty lists", () => {
+		const setWidget = vi.fn();
+		const context = {
+			mode: "tui",
+			hasUI: true,
+			ui: { setWidget },
+		} as unknown as ExtensionContext;
 
-		const tui = fakeContext("tui", true);
-		projectTodoWidget(tui.context, list);
-		expect(typeof tui.setWidget.mock.calls[0]?.[1]).toBe("function");
-
-		const rpc = fakeContext("rpc", true);
-		projectTodoWidget(rpc.context, list);
-		expect(Array.isArray(rpc.setWidget.mock.calls[0]?.[1])).toBe(true);
-
-		for (const mode of ["json", "print"] as const) {
-			const headless = fakeContext(mode, false);
-			projectTodoWidget(headless.context, list);
-			expect(headless.setWidget).not.toHaveBeenCalled();
-		}
-	});
-
-	it("clears the canonical widget key when the active list closes", () => {
-		const tui = fakeContext("tui", true);
-		projectTodoWidget(tui.context, null);
-		expect(tui.setWidget).toHaveBeenCalledWith("todo:status", undefined);
+		projectTodoWidget(context, null);
+		projectTodoWidget(context, []);
+		expect(setWidget).toHaveBeenNthCalledWith(1, TODO_WIDGET_KEY, undefined);
+		expect(setWidget).toHaveBeenNthCalledWith(2, TODO_WIDGET_KEY, undefined);
 	});
 });

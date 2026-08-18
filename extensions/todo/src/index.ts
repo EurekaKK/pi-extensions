@@ -1,203 +1,142 @@
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
-	TODO_COUNTER_ENTRY_TYPE,
-	TODO_REMINDER_INTERVAL,
-	type TODO_SNAPSHOT_ENTRY_TYPE,
-	TODO_TOOL_NAME,
-} from "./constants.js";
-import { createEmptyRuntimeState, type RuntimeState } from "./domain.js";
-import {
-	createTodoCounter,
-	restoreTodoState,
-	type TodoCounterV1,
-	TodoLifecycleChangedError,
-	TodoStateCoordinator,
-	withReminderCount,
-} from "./session-state.js";
-import { buildTodoReminder, createTodoToolDefinition, isRejectedTodoDetails } from "./tool.js";
+	type ExtensionAPI,
+	type ExtensionContext,
+	getAgentDir,
+	type SessionEntry,
+	withFileMutationQueue,
+} from "@earendil-works/pi-coding-agent";
+import { type FileMutationQueue, initializeTodoConfig, TodoConfigurationError, type TodoConfigV1 } from "./config.js";
+import { TODO_SNAPSHOT_ENTRY_TYPE } from "./constants.js";
+import { createTodoSnapshot, parseTodoSnapshot, type TodoItem } from "./domain.js";
+import { createTodoToolDefinition } from "./tool.js";
 import { tryProjectTodoWidget } from "./widget.js";
 
-interface PendingReminder {
-	readonly generation: number;
-	readonly text: string;
+export interface LoadTodoExtensionDependencies {
+	readonly agentDir: string;
+	readonly withFileMutationQueue: FileMutationQueue;
 }
 
-function safeBranch(context: ExtensionContext): {
-	readonly entries: readonly SessionEntry[];
-	readonly failed: boolean;
-} {
+interface TodoRuntimeState {
+	visibleTodos: readonly TodoItem[] | null;
+	warningShown: boolean;
+}
+
+function notify(context: ExtensionContext, message: string): void {
+	if (!context.hasUI) return;
 	try {
-		return { entries: context.sessionManager.getBranch(), failed: false };
+		context.ui.notify(message, "warning");
 	} catch {
-		return { entries: [], failed: true };
+		// Advisory UI projection must not change Todo semantics.
 	}
 }
 
-export function registerTodoExtension(pi: ExtensionAPI): void {
-	const coordinator = new TodoStateCoordinator();
-	const toolCallGenerations = new Map<string, number>();
-	const pendingReminders = new Map<string, PendingReminder>();
-	const ignoredFailedEntryIds = new Set<string>();
-	const ignoredFailedEntryData = new Set<unknown>();
-	let corruptionWarningShown = false;
+function restoreVisibleTodos(context: ExtensionContext, state: TodoRuntimeState): void {
+	let entries: readonly SessionEntry[];
+	try {
+		entries = context.sessionManager.getBranch();
+	} catch {
+		state.visibleTodos = null;
+		tryProjectTodoWidget(context, null);
+		notify(context, "Todo could not read the current session branch and cleared its widget.");
+		return;
+	}
 
-	function noteCorruptSessionEntry(context: ExtensionContext): void {
-		if (corruptionWarningShown || !context.hasUI) return;
-		corruptionWarningShown = true;
-		try {
-			context.ui.notify(
-				"Todo skipped invalid session state and restored the latest valid state it could read.",
-				"warning",
-			);
-		} catch {
-			// UI projection is advisory and must not alter Todo semantics.
+	let latestValidIndex = -1;
+	let latestValidTodos: readonly TodoItem[] | null = null;
+	let latestUserMessageIndex = -1;
+	let foundInvalidV2 = false;
+
+	for (const [index, entry] of entries.entries()) {
+		if (entry.type === "message" && entry.message.role === "user") {
+			latestUserMessageIndex = index;
+		}
+		if (entry.type !== "custom" || entry.customType !== TODO_SNAPSHOT_ENTRY_TYPE) continue;
+		const parsed = parseTodoSnapshot(entry.data);
+		if (parsed.status === "valid") {
+			latestValidIndex = index;
+			latestValidTodos = parsed.todos;
+		} else if (parsed.status === "invalid") {
+			foundInvalidV2 = true;
 		}
 	}
 
-	function recoverFromBranch(
-		context: ExtensionContext,
-		fallbackState: RuntimeState,
-		failedAppend?: {
-			readonly customType: typeof TODO_COUNTER_ENTRY_TYPE | typeof TODO_SNAPSHOT_ENTRY_TYPE;
-			readonly data: unknown;
-		},
-	): RuntimeState {
-		if (failedAppend !== undefined) ignoredFailedEntryData.add(failedAppend.data);
-		const branch = safeBranch(context);
-		if (branch.failed) {
-			noteCorruptSessionEntry(context);
-			return fallbackState;
-		}
-		for (const entry of branch.entries) {
-			if (
-				entry.type === "custom" &&
-				ignoredFailedEntryData.has(entry.data) &&
-				(failedAppend === undefined || entry.customType === failedAppend.customType)
-			) {
-				ignoredFailedEntryIds.add(entry.id);
-			}
-		}
-		const restored = restoreTodoState(branch.entries.filter((entry) => !ignoredFailedEntryIds.has(entry.id)));
-		if (restored.foundCorruptEntry) noteCorruptSessionEntry(context);
-		return restored.state;
+	state.visibleTodos = latestValidTodos !== null && latestValidIndex > latestUserMessageIndex ? latestValidTodos : null;
+	tryProjectTodoWidget(context, state.visibleTodos);
+
+	if (foundInvalidV2 && !state.warningShown) {
+		state.warningShown = true;
+		notify(context, "Todo skipped an invalid version 2 snapshot and restored the latest valid state it could read.");
 	}
+}
 
-	async function restoreLifecycle(context: ExtensionContext, resetWarning: boolean): Promise<void> {
-		const generation = coordinator.invalidateLifecycle();
-		toolCallGenerations.clear();
-		pendingReminders.clear();
-		if (resetWarning) {
-			corruptionWarningShown = false;
-			ignoredFailedEntryIds.clear();
-			ignoredFailedEntryData.clear();
-		}
-		const restoredState = recoverFromBranch(context, createEmptyRuntimeState());
-		try {
-			await coordinator.run(generation, undefined, (_state, commit) => {
-				commit(restoredState);
-				tryProjectTodoWidget(context, restoredState.activeList);
-			});
-		} catch (error) {
-			if (!(error instanceof TodoLifecycleChangedError)) throw error;
-		}
-	}
+export function registerTodoExtension(pi: ExtensionAPI, config: TodoConfigV1): void {
+	const state: TodoRuntimeState = {
+		visibleTodos: null,
+		warningShown: false,
+	};
 
-	async function clearLifecycle(context: ExtensionContext): Promise<void> {
-		const generation = coordinator.invalidateLifecycle();
-		toolCallGenerations.clear();
-		pendingReminders.clear();
-		try {
-			await coordinator.run(generation, undefined, (_state, commit) => {
-				commit(createEmptyRuntimeState());
-				tryProjectTodoWidget(context, null);
-			});
-		} catch (error) {
-			if (!(error instanceof TodoLifecycleChangedError)) throw error;
-		}
-	}
-
-	pi.on("session_start", async (_event, context) => {
-		await restoreLifecycle(context, true);
+	pi.on("session_start", (_event, context) => {
+		state.warningShown = false;
+		restoreVisibleTodos(context, state);
 	});
 
-	pi.on("session_tree", async (_event, context) => {
-		await restoreLifecycle(context, false);
+	pi.on("session_tree", (_event, context) => {
+		restoreVisibleTodos(context, state);
 	});
 
-	pi.on("session_shutdown", async (_event, context) => {
-		await clearLifecycle(context);
+	pi.on("turn_start", (_event, context) => {
+		state.visibleTodos = null;
+		tryProjectTodoWidget(context, null);
 	});
 
-	pi.on("tool_execution_start", (event) => {
-		toolCallGenerations.set(event.toolCallId, coordinator.generation);
-	});
-
-	pi.on("tool_result", (event) => {
-		if (event.toolName !== TODO_TOOL_NAME || !isRejectedTodoDetails(event.details)) return;
-		return { isError: true };
-	});
-
-	pi.on("tool_execution_end", async (event, context) => {
-		const generation = toolCallGenerations.get(event.toolCallId);
-		toolCallGenerations.delete(event.toolCallId);
-		if (generation === undefined || event.toolName === TODO_TOOL_NAME) return;
-
-		try {
-			await coordinator.run(generation, undefined, (state, commit) => {
-				if (state.activeList === null) return;
-				const nextCount =
-					state.reminderCount === TODO_REMINDER_INTERVAL - 1 ? 0 : ((state.reminderCount + 1) as 1 | 2 | 3 | 4);
-				const reminder = nextCount === 0 ? buildTodoReminder(state) : null;
-				const counter: TodoCounterV1 = createTodoCounter(nextCount);
-
-				// Pi reports parallel calls here in completion order, but only lets
-				// extensions replace the persisted tool result later in message_end.
-				// Commit the cadence here and bind any reminder to its call ID so
-				// parallel batches cannot reorder or double-count it.
-				try {
-					pi.appendEntry(TODO_COUNTER_ENTRY_TYPE, counter);
-				} catch {
-					const recoveredState = recoverFromBranch(context, state, {
-						customType: TODO_COUNTER_ENTRY_TYPE,
-						data: counter,
-					});
-					commit(recoveredState);
-					tryProjectTodoWidget(context, recoveredState.activeList);
-					return;
-				}
-
-				commit(withReminderCount(state, nextCount));
-				if (reminder !== null) {
-					pendingReminders.set(event.toolCallId, { generation, text: reminder });
-				}
-			});
-		} catch (error) {
-			if (!(error instanceof TodoLifecycleChangedError)) throw error;
-		}
-	});
-
-	pi.on("message_end", (event) => {
-		if (event.message.role !== "toolResult") return;
-		const pending = pendingReminders.get(event.message.toolCallId);
-		if (pending === undefined) return;
-		pendingReminders.delete(event.message.toolCallId);
-		if (pending.generation !== coordinator.generation) return;
-		return {
-			message: {
-				...event.message,
-				content: [...event.message.content, { type: "text" as const, text: pending.text }],
-			},
-		};
+	pi.on("session_shutdown", (_event, context) => {
+		state.visibleTodos = null;
+		tryProjectTodoWidget(context, null);
 	});
 
 	pi.registerTool(
-		createTodoToolDefinition(pi, {
-			coordinator,
-			generationForToolCall: (toolCallId) => toolCallGenerations.get(toolCallId),
-			recoverAfterFailedAppend: (context, customType, attemptedData, fallbackState) =>
-				recoverFromBranch(context, fallbackState, { customType, data: attemptedData }),
+		createTodoToolDefinition({
+			allowParallelInProgress: config.allowParallelInProgress,
+			persist(todos) {
+				try {
+					pi.appendEntry(TODO_SNAPSHOT_ENTRY_TYPE, createTodoSnapshot(todos));
+				} catch (error) {
+					throw new Error(`todo_write persistence failed: ${error instanceof Error ? error.message : String(error)}`);
+				}
+			},
+			show(todos, context) {
+				state.visibleTodos = todos;
+				tryProjectTodoWidget(context, todos);
+			},
 		}),
 	);
 }
 
-export default registerTodoExtension;
+function registerDisabledTodo(pi: ExtensionAPI, error: unknown): void {
+	const message = error instanceof Error ? error.message : String(error);
+	let warningShown = false;
+	pi.on("session_start", (_event, context) => {
+		if (warningShown || !context.hasUI) return;
+		warningShown = true;
+		notify(context, `Todo is disabled: ${message}`);
+	});
+}
+
+export async function loadTodoExtension(pi: ExtensionAPI, dependencies: LoadTodoExtensionDependencies): Promise<void> {
+	try {
+		const initialized = await initializeTodoConfig(dependencies);
+		registerTodoExtension(pi, initialized.config);
+	} catch (error) {
+		registerDisabledTodo(pi, error);
+	}
+}
+
+export default async function todo(pi: ExtensionAPI): Promise<void> {
+	await loadTodoExtension(pi, {
+		agentDir: getAgentDir(),
+		withFileMutationQueue,
+	});
+}
+
+export type { TodoConfigV1 };
+export { TodoConfigurationError };
