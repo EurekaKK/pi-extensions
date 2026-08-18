@@ -1,6 +1,8 @@
 # sub-agent 特殊约束
 
-- `sidecar/*.ts` 是源码，`dist/sidecar/*.js` 是运行时直接依赖且必须跟踪的构建产物；修改 sidecar 后必须重新构建并保持两者同步。
-- `test/e2e/` 只用于本地真实环境验证，整个目录不得暂存或提交。
-- 当前实现只面向 POSIX；除非用户明确要求，不增加 Windows 兼容逻辑。
-- 进程生命周期、并发状态、取消、kill 和 session 清理属于核心不变量；相关修改必须有针对性回归测试，并验证 shutdown 后没有子进程继续运行。
+- v2 不使用 sidecar 进程；不要重新引入 `sidecar/`、`dist/sidecar/`、IPC 协议或 mailbox/spool。
+- child 通过 Pi 公开 `createAgentSessionServices()` / `createAgentSessionFromServices()` 在父进程内创建。
+- child session 文件只写入 `<agentDir>/sub-agent/sessions/<parentSessionId>/`；不得写 extension 源码目录。
+- extension factory 会在每个 child session 中重新执行；模块级状态必须并发安全。
+- 默认测试使用 `fauxProvider` 和临时目录，不得访问真实 `~/.pi`、凭据、模型或网络。
+- 修改 child 生命周期、并发、深度、冷恢复或结算通知时，必须增加针对性回归测试。

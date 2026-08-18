@@ -13,17 +13,11 @@
 	"files": [
 		"index.ts",
 		"src/**/*.ts",
-		"sidecar/**/*.ts",
-		"dist/sidecar/*.js",
 		"README.md"
 	],
 	"scripts": {
-		"build:sidecar": "tsc -p tsconfig.sidecar.json",
-		"check": "biome check . && tsc --noEmit && tsc -p tsconfig.sidecar.json --noEmit",
-		"pretest": "npm run build:sidecar",
-		"test": "vitest run",
-		"prepare": "npm run build:sidecar",
-		"prepack": "npm run build:sidecar"
+		"check": "biome check . && tsc --noEmit",
+		"test": "vitest run"
 	},
 	"pi": {
 		"extensions": [

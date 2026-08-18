@@ -1,79 +1,88 @@
 import { constants as fsConstants } from "node:fs";
-import { chmod, lstat, mkdir, open, readFile, realpath, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import type { ThinkingLevelV1 } from "./contracts.js";
+import type { SubAgentConfigV2, SubagentDelegationToolConfigV2 } from "./domain.js";
 
 export const CONFIG_DIRECTORY_NAME = "sub-agent";
 export const CONFIG_FILE_NAME = "config.json";
+export const CONFIG_VERSION = 2;
 export const MAX_CONFIG_BYTES = 64 * 1024;
 export const CONFIG_DIRECTORY_MODE = 0o700;
 export const CONFIG_FILE_MODE = 0o600;
 
-export interface FixedModelConfigV1 {
-	provider: string;
-	id: string;
+export type FileMutationQueue = <T>(filePath: string, mutation: () => Promise<T>) => Promise<T>;
+
+export interface InitializeSubAgentConfigOptions {
+	readonly agentDir: string;
+	readonly withFileMutationQueue: FileMutationQueue;
 }
 
-export type ModelConfigV1 = "inherit" | FixedModelConfigV1;
-export type ThinkingConfigV1 = "inherit" | ThinkingLevelV1;
-
-export interface SubagentConfigV1 {
-	version: 1;
-	model: ModelConfigV1;
-	thinkingLevel: ThinkingConfigV1;
-	requiredExtensionPaths: string[];
+export interface InitializedSubAgentConfig {
+	readonly configDir: string;
+	readonly configPath: string;
+	readonly config: SubAgentConfigV2;
+	readonly created: boolean;
 }
 
-const EMPTY_REQUIRED_EXTENSION_PATHS: string[] = [];
-Object.freeze(EMPTY_REQUIRED_EXTENSION_PATHS);
+const THINKING_LEVELS = new Set(["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
 
-export const DEFAULT_CONFIG: SubagentConfigV1 = Object.freeze({
-	version: 1,
+const DEFAULT_AGENT_OPTIONS = Object.freeze({
 	model: "inherit",
 	thinkingLevel: "inherit",
-	requiredExtensionPaths: EMPTY_REQUIRED_EXTENSION_PATHS,
+}) as SubagentDelegationToolConfigV2["agentOptions"];
+
+export const DEFAULT_CONFIG: SubAgentConfigV2 = Object.freeze({
+	version: CONFIG_VERSION,
+	delegationTools: Object.freeze([
+		Object.freeze({
+			toolName: "subagent",
+			provider: "spawn",
+			backgroundMode: "continuable",
+			maxDepth: 3,
+			agentOptions: DEFAULT_AGENT_OPTIONS,
+			toolFilter: null,
+			persona: null,
+		}),
+		Object.freeze({
+			toolName: "subagent_fork",
+			provider: "fork",
+			backgroundMode: "one-shot",
+			maxDepth: 3,
+			agentOptions: DEFAULT_AGENT_OPTIONS,
+			toolFilter: null,
+			persona: null,
+		}),
+	]),
+	reportDelivery: "wakeup",
 });
 
 const DEFAULT_CONFIG_TEXT = `${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`;
-const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
-const THINKING_LEVELS = new Set<string>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
-export type FileMutationQueue = <T>(filePath: string, mutation: () => Promise<T>) => Promise<T>;
-export type CanonicalizePath = (filePath: string) => Promise<string>;
-
-export interface InitializeConfigOptions {
-	agentDir: string;
-	withFileMutationQueue: FileMutationQueue;
-	canonicalizePath?: CanonicalizePath;
-}
-
-export interface InitializedConfig {
-	configDir: string;
-	configPath: string;
-	config: SubagentConfigV1;
-	created: boolean;
-}
-
-export class ConfigurationError extends Error {
+export class SubAgentConfigurationError extends Error {
 	readonly configPath: string;
-	readonly field: string;
-	readonly reason: string;
 
-	constructor(configPath: string, field: string, reason: string) {
-		super(`${configPath}: ${field}: ${reason}`);
-		this.name = "ConfigurationError";
+	constructor(configPath: string, reason: string) {
+		super(`${configPath}: ${reason}`);
+		this.name = "SubAgentConfigurationError";
 		this.configPath = configPath;
-		this.field = field;
-		this.reason = reason;
 	}
 }
 
-type JsonRecord = Record<string, unknown>;
-
-function isJsonRecord(value: unknown): value is JsonRecord {
+function isRecord(value: unknown): value is Record<string, unknown> {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
 	const prototype = Object.getPrototypeOf(value);
 	return prototype === Object.prototype || prototype === null;
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+	const actual = Object.keys(value).sort();
+	const keys = [...expected].sort();
+	return (
+		Object.getOwnPropertySymbols(value).length === 0 &&
+		actual.length === keys.length &&
+		actual.every((key, index) => key === keys[index])
+	);
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
@@ -85,112 +94,138 @@ function describeIoError(error: unknown): string {
 	return "filesystem operation failed";
 }
 
-function fail(configPath: string, field: string, reason: string): never {
-	throw new ConfigurationError(configPath, field, reason);
+function fail(configPath: string, reason: string): never {
+	throw new SubAgentConfigurationError(configPath, reason);
 }
 
-function requireExactObject(
-	value: unknown,
-	configPath: string,
-	field: string,
-	requiredKeys: readonly string[],
-): JsonRecord {
-	if (!isJsonRecord(value)) fail(configPath, field, "must be a JSON object");
-	for (const key of Object.keys(value)) {
-		if (!requiredKeys.includes(key)) fail(configPath, `${field}.${key}`, "unknown field");
-	}
-	for (const key of requiredKeys) {
-		if (!Object.hasOwn(value, key)) fail(configPath, `${field}.${key}`, "required field is missing");
+function requireNonBlankString(value: unknown, field: string, configPath: string): string {
+	if (typeof value !== "string" || value.trim().length === 0) {
+		fail(configPath, `${field} must be a non-blank string`);
 	}
 	return value;
 }
 
-function requireNonBlankString(value: unknown, configPath: string, field: string): string {
-	if (typeof value !== "string") fail(configPath, field, "must be a string");
-	if (value.trim().length === 0) fail(configPath, field, "must be non-blank after trimming");
-	return value;
+function validateUniqueStrings(value: unknown, field: string, configPath: string, absolute = false): readonly string[] {
+	if (!Array.isArray(value)) fail(configPath, `${field} must be an array`);
+	const result: string[] = [];
+	for (const [index, candidate] of value.entries()) {
+		const item = requireNonBlankString(candidate, `${field}[${index}]`, configPath);
+		if (absolute && !isAbsolute(item)) fail(configPath, `${field}[${index}] must be an absolute path`);
+		result.push(item);
+	}
+	if (new Set(result).size !== result.length) fail(configPath, `${field} must not contain duplicates`);
+	return Object.freeze(result);
 }
 
-function validateModel(value: unknown, configPath: string): ModelConfigV1 {
-	if (value === "inherit") return value;
-	const model = requireExactObject(value, configPath, "model", ["provider", "id"]);
+function validateModel(value: unknown, configPath: string): SubagentDelegationToolConfigV2["agentOptions"]["model"] {
+	if (value === "inherit") return "inherit";
+	if (!isRecord(value) || !hasExactKeys(value, ["provider", "id"])) {
+		fail(configPath, 'agentOptions.model must be "inherit" or an object with provider and id');
+	}
 	return Object.freeze({
-		provider: requireNonBlankString(model.provider, configPath, "model.provider"),
-		id: requireNonBlankString(model.id, configPath, "model.id"),
+		provider: requireNonBlankString(value.provider, "agentOptions.model.provider", configPath),
+		id: requireNonBlankString(value.id, "agentOptions.model.id", configPath),
 	});
 }
 
-function validateThinking(value: unknown, configPath: string): ThinkingConfigV1 {
-	if (value === "inherit") return value;
-	if (typeof value !== "string" || !THINKING_LEVELS.has(value)) {
-		fail(
-			configPath,
-			"thinkingLevel",
-			'must be "inherit", "off", "minimal", "low", "medium", "high", "xhigh", or "max"',
-		);
+function validateToolFilter(value: unknown, configPath: string): SubagentDelegationToolConfigV2["toolFilter"] {
+	if (value === null) return null;
+	if (!isRecord(value) || !hasExactKeys(value, ["allow", "deny"])) {
+		fail(configPath, "toolFilter must be null or an object containing only allow and deny");
 	}
-	return value as ThinkingLevelV1;
-}
-
-async function validateRequiredPaths(
-	value: unknown,
-	configPath: string,
-	canonicalizePath: CanonicalizePath,
-): Promise<string[]> {
-	if (!Array.isArray(value)) fail(configPath, "requiredExtensionPaths", "must be an array");
-	const literalPaths = value.map((candidate, index) =>
-		requireNonBlankString(candidate, configPath, `requiredExtensionPaths[${index}]`),
-	);
-	if (new Set(literalPaths).size !== literalPaths.length) {
-		fail(configPath, "requiredExtensionPaths", "must not contain duplicate paths");
+	const allow =
+		value.allow === undefined ? undefined : validateUniqueStrings(value.allow, "toolFilter.allow", configPath);
+	const deny = value.deny === undefined ? undefined : validateUniqueStrings(value.deny, "toolFilter.deny", configPath);
+	if (allow === undefined && deny === undefined) fail(configPath, "toolFilter must provide allow or deny");
+	if (allow !== undefined && allow.length === 0 && deny !== undefined && deny.length === 0) {
+		fail(configPath, "toolFilter must not provide empty allow and deny lists");
 	}
-
-	const canonicalPaths: string[] = [];
-	for (const [index, filePath] of literalPaths.entries()) {
-		const field = `requiredExtensionPaths[${index}]`;
-		if (!isAbsolute(filePath)) fail(configPath, field, "must be an absolute path");
-		let canonicalPath: string;
-		try {
-			canonicalPath = await canonicalizePath(filePath);
-		} catch (error) {
-			fail(configPath, field, `cannot canonicalize an existing path (${describeIoError(error)})`);
-		}
-		let metadata: Awaited<ReturnType<typeof stat>>;
-		try {
-			metadata = await stat(canonicalPath);
-		} catch (error) {
-			fail(configPath, field, `cannot inspect the canonical path (${describeIoError(error)})`);
-		}
-		if (!metadata.isFile()) fail(configPath, field, "must resolve to a regular file-backed extension entry");
-		canonicalPaths.push(canonicalPath);
-	}
-
-	if (new Set(canonicalPaths).size !== canonicalPaths.length) {
-		fail(configPath, "requiredExtensionPaths", "contains paths that resolve to the same canonical entry");
-	}
-	return Object.freeze(canonicalPaths) as string[];
-}
-
-export async function validateConfig(
-	value: unknown,
-	configPath = CONFIG_FILE_NAME,
-	canonicalizePath: CanonicalizePath = realpath,
-): Promise<SubagentConfigV1> {
-	const root = requireExactObject(value, configPath, "$", [
-		"version",
-		"model",
-		"thinkingLevel",
-		"requiredExtensionPaths",
-	]);
-	if (root.version !== 1) fail(configPath, "version", "must equal 1");
-	const model = validateModel(root.model, configPath);
-	const thinkingLevel = validateThinking(root.thinkingLevel, configPath);
-	const requiredExtensionPaths = await validateRequiredPaths(root.requiredExtensionPaths, configPath, canonicalizePath);
+	if (allow === undefined && deny?.length === 0) fail(configPath, "toolFilter must not provide an empty deny list");
+	if (allow?.length === 0 && deny === undefined) fail(configPath, "toolFilter must not provide an empty allow list");
 	return Object.freeze({
-		version: 1,
-		model,
-		thinkingLevel,
-		requiredExtensionPaths,
+		...(allow === undefined ? {} : { allow }),
+		...(deny === undefined ? {} : { deny }),
+	});
+}
+
+function validateDelegationTool(value: unknown, field: string, configPath: string): SubagentDelegationToolConfigV2 {
+	if (
+		!isRecord(value) ||
+		!hasExactKeys(value, [
+			"toolName",
+			"provider",
+			"backgroundMode",
+			"maxDepth",
+			"agentOptions",
+			"toolFilter",
+			"persona",
+		])
+	) {
+		fail(configPath, `${field} contains unknown or missing fields`);
+	}
+	const toolName = requireNonBlankString(value.toolName, `${field}.toolName`, configPath);
+	if (value.provider !== "spawn" && value.provider !== "fork") {
+		fail(configPath, `${field}.provider must be "spawn" or "fork"`);
+	}
+	if (value.backgroundMode !== "one-shot" && value.backgroundMode !== "continuable") {
+		fail(configPath, `${field}.backgroundMode must be "one-shot" or "continuable"`);
+	}
+	if (typeof value.maxDepth !== "number" || !Number.isSafeInteger(value.maxDepth) || value.maxDepth < 0) {
+		fail(configPath, `${field}.maxDepth must be a non-negative safe integer`);
+	}
+	if (!isRecord(value.agentOptions) || !hasExactKeys(value.agentOptions, ["model", "thinkingLevel"])) {
+		fail(configPath, `${field}.agentOptions must contain exactly model and thinkingLevel`);
+	}
+	if (typeof value.agentOptions.thinkingLevel !== "string" || !THINKING_LEVELS.has(value.agentOptions.thinkingLevel)) {
+		fail(configPath, `${field}.agentOptions.thinkingLevel is invalid`);
+	}
+	const persona =
+		value.persona === null ? null : requireNonBlankString(value.persona, `${field}.persona`, configPath).trim();
+
+	return Object.freeze({
+		toolName,
+		provider: value.provider,
+		backgroundMode: value.backgroundMode,
+		maxDepth: value.maxDepth,
+		agentOptions: Object.freeze({
+			model: validateModel(value.agentOptions.model, configPath),
+			thinkingLevel: value.agentOptions
+				.thinkingLevel as SubagentDelegationToolConfigV2["agentOptions"]["thinkingLevel"],
+		}),
+		toolFilter: validateToolFilter(value.toolFilter, configPath),
+		persona,
+	});
+}
+
+export function validateSubAgentConfig(value: unknown, configPath: string): SubAgentConfigV2 {
+	if (!isRecord(value) || !hasExactKeys(value, ["version", "delegationTools", "reportDelivery"])) {
+		fail(configPath, "top-level config contains unknown or missing fields");
+	}
+	if (value.version !== CONFIG_VERSION) fail(configPath, `version must equal ${CONFIG_VERSION}`);
+	if (
+		typeof value.reportDelivery !== "string" ||
+		(value.reportDelivery !== "wakeup" && value.reportDelivery !== "quiet")
+	) {
+		fail(configPath, 'reportDelivery must be "wakeup" or "quiet"');
+	}
+	if (!Array.isArray(value.delegationTools) || value.delegationTools.length === 0) {
+		fail(configPath, "delegationTools must be a non-empty array");
+	}
+
+	const tools = value.delegationTools.map((candidate, index) =>
+		validateDelegationTool(candidate, `delegationTools[${index}]`, configPath),
+	);
+	const toolNames = new Set<string>();
+	for (const tool of tools) {
+		if (toolNames.has(tool.toolName))
+			fail(configPath, `duplicate delegation tool name ${JSON.stringify(tool.toolName)}`);
+		toolNames.add(tool.toolName);
+	}
+
+	return Object.freeze({
+		version: CONFIG_VERSION,
+		delegationTools: Object.freeze(tools),
+		reportDelivery: value.reportDelivery,
 	});
 }
 
@@ -199,42 +234,40 @@ async function readStrictJson(configPath: string): Promise<unknown> {
 	try {
 		before = await lstat(configPath);
 	} catch (error) {
-		throw new ConfigurationError(configPath, "$", `cannot inspect config (${describeIoError(error)})`);
+		fail(configPath, `cannot inspect config (${describeIoError(error)})`);
 	}
-	if (!before.isFile()) fail(configPath, "$", "config path must be a regular file");
-	if (before.size > MAX_CONFIG_BYTES) fail(configPath, "$", `file exceeds ${MAX_CONFIG_BYTES} UTF-8 bytes`);
+	if (!before.isFile()) fail(configPath, "config path must be a regular file");
+	if (before.size > MAX_CONFIG_BYTES) fail(configPath, `file exceeds ${MAX_CONFIG_BYTES} UTF-8 bytes`);
 
 	let bytes: Uint8Array;
 	try {
 		bytes = await readFile(configPath);
 	} catch (error) {
-		throw new ConfigurationError(configPath, "$", `cannot read config (${describeIoError(error)})`);
+		fail(configPath, `cannot read config (${describeIoError(error)})`);
 	}
-	if (bytes.byteLength > MAX_CONFIG_BYTES) fail(configPath, "$", `file exceeds ${MAX_CONFIG_BYTES} UTF-8 bytes`);
+	if (bytes.byteLength > MAX_CONFIG_BYTES) fail(configPath, `file exceeds ${MAX_CONFIG_BYTES} UTF-8 bytes`);
 
 	let after: Awaited<ReturnType<typeof lstat>>;
 	try {
 		after = await lstat(configPath);
 	} catch (error) {
-		throw new ConfigurationError(configPath, "$", `cannot re-check config (${describeIoError(error)})`);
+		fail(configPath, `cannot re-check config (${describeIoError(error)})`);
 	}
 	if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size) {
-		fail(configPath, "$", "config changed while it was being read");
+		fail(configPath, "config changed while it was being read");
 	}
 
 	let text: string;
 	try {
 		text = TEXT_DECODER.decode(bytes);
 	} catch {
-		fail(configPath, "$", "file is not valid UTF-8");
+		fail(configPath, "file is not valid UTF-8");
 	}
-	let parsed: unknown;
 	try {
-		parsed = JSON.parse(text) as unknown;
+		return JSON.parse(text) as unknown;
 	} catch {
-		fail(configPath, "$", "file is not strict JSON");
+		return fail(configPath, "file is not strict JSON");
 	}
-	return parsed;
 }
 
 async function createDefaultConfig(configPath: string): Promise<boolean> {
@@ -246,32 +279,33 @@ async function createDefaultConfig(configPath: string): Promise<boolean> {
 		return true;
 	} catch (error) {
 		if (isNodeError(error) && error.code === "EEXIST") return false;
-		throw new ConfigurationError(configPath, "$", `cannot create default config (${describeIoError(error)})`);
+		return fail(configPath, `cannot create default config (${describeIoError(error)})`);
 	} finally {
 		await handle?.close();
 	}
 }
 
-export function getConfigPath(agentDir: string): string {
+export function getSubAgentConfigPath(agentDir: string): string {
 	return join(agentDir, CONFIG_DIRECTORY_NAME, CONFIG_FILE_NAME);
 }
 
-export async function initializeConfig(options: InitializeConfigOptions): Promise<InitializedConfig> {
+export async function initializeSubAgentConfig(
+	options: InitializeSubAgentConfigOptions,
+): Promise<InitializedSubAgentConfig> {
 	const configDir = join(options.agentDir, CONFIG_DIRECTORY_NAME);
 	const configPath = join(configDir, CONFIG_FILE_NAME);
-	const canonicalizePath = options.canonicalizePath ?? realpath;
 
 	return options.withFileMutationQueue(configPath, async () => {
 		try {
 			await mkdir(configDir, { recursive: true, mode: CONFIG_DIRECTORY_MODE });
 			await chmod(configDir, CONFIG_DIRECTORY_MODE);
 		} catch (error) {
-			throw new ConfigurationError(configPath, "$", `cannot prepare config directory (${describeIoError(error)})`);
+			fail(configPath, `cannot prepare config directory (${describeIoError(error)})`);
 		}
 
 		const created = await createDefaultConfig(configPath);
 		const parsed = await readStrictJson(configPath);
-		const config = await validateConfig(parsed, configPath, canonicalizePath);
+		const config = validateSubAgentConfig(parsed, configPath);
 		return Object.freeze({ configDir, configPath, config, created });
 	});
 }
