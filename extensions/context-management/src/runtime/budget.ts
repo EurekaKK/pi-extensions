@@ -1,79 +1,30 @@
 import { type ContextEvent, convertToLlm, estimateTokens, type ToolInfo } from "@earendil-works/pi-coding-agent";
-import {
-	COMPACTION_GENERATION_MARGIN_TOKENS,
-	ESTIMATOR_SAMPLE_LIMIT,
-	GENERATION_HEADROOM_TOKENS,
-	PREPARATION_MIN_LEAD_TOKENS,
-} from "../constants.js";
+import { ESTIMATOR_SAMPLE_LIMIT } from "../constants.js";
 import { stableJson } from "../stable-json.js";
 
 export type AgentMessage = ContextEvent["messages"][number];
 
 export interface ContextBudget {
 	readonly contextWindow: number;
-	readonly generationHeadroom: number;
-	readonly safeInput: number;
-	readonly protectedTailTarget: number;
-	readonly checkpointHardLimit: number;
-	readonly compactionGenerationMargin: number;
-	readonly estimationMargin: number;
-	readonly preparationLead: number;
+	readonly thresholdTokens: number;
+	readonly retainTokens: number;
 }
 
-export interface CompactionThresholds {
-	readonly blocking: number;
-	readonly preparation: number;
-}
-
-export function clamp(value: number, minimum: number, maximum: number): number {
-	return Math.min(maximum, Math.max(minimum, value));
-}
-
-export function deriveContextBudget(contextWindow: number): ContextBudget {
-	if (!Number.isSafeInteger(contextWindow) || contextWindow <= GENERATION_HEADROOM_TOKENS) {
+export function deriveContextBudget(
+	contextWindow: number,
+	policy: { readonly thresholdRatio: number; readonly retainRatio: number },
+): ContextBudget {
+	if (!Number.isSafeInteger(contextWindow) || contextWindow <= 0) {
+		throw new RangeError(`Model context window must be a positive integer; received ${contextWindow}.`);
+	}
+	const thresholdTokens = Math.floor(contextWindow * policy.thresholdRatio);
+	const retainTokens = Math.floor(contextWindow * policy.retainRatio);
+	if (retainTokens >= thresholdTokens) {
 		throw new RangeError(
-			`Model context window must be an integer greater than ${GENERATION_HEADROOM_TOKENS}; received ${contextWindow}.`,
+			`retainTokens (${retainTokens}) must be less than threshold tokens ${thresholdTokens} for window ${contextWindow}.`,
 		);
 	}
-	const safeInput = contextWindow - GENERATION_HEADROOM_TOKENS;
-	const protectedTailTarget = clamp(Math.floor(safeInput * 0.1), 20_000, 64_000);
-	return Object.freeze({
-		contextWindow,
-		generationHeadroom: GENERATION_HEADROOM_TOKENS,
-		safeInput,
-		protectedTailTarget,
-		checkpointHardLimit: protectedTailTarget,
-		compactionGenerationMargin: COMPACTION_GENERATION_MARGIN_TOKENS,
-		estimationMargin: clamp(Math.floor(contextWindow * 0.005), 1_024, 4_096),
-		preparationLead: Math.max(PREPARATION_MIN_LEAD_TOKENS, Math.floor(contextWindow * 0.1)),
-	});
-}
-
-export function deriveCompactionThresholds(
-	budget: ContextBudget,
-	correctedPromptOverhead: number,
-): CompactionThresholds {
-	if (!Number.isFinite(correctedPromptOverhead) || correctedPromptOverhead < 0) {
-		throw new RangeError("Compaction prompt overhead must be a non-negative finite number.");
-	}
-	const blocking = Math.floor(
-		budget.contextWindow -
-			budget.checkpointHardLimit -
-			budget.compactionGenerationMargin -
-			correctedPromptOverhead -
-			budget.estimationMargin,
-	);
-	return Object.freeze({
-		blocking,
-		preparation: Math.max(0, blocking - budget.preparationLead),
-	});
-}
-
-export function evidenceNetSavingsGate(currentProjectionTokens: number): number {
-	if (!Number.isFinite(currentProjectionTokens) || currentProjectionTokens < 0) {
-		throw new RangeError("Projection token estimate must be a non-negative finite number.");
-	}
-	return Math.max(2_048, Math.floor(currentProjectionTokens * 0.05));
+	return Object.freeze({ contextWindow, thresholdTokens, retainTokens });
 }
 
 export function estimateTextTokens(text: string): number {

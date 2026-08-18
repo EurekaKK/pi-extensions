@@ -1,12 +1,11 @@
 import type { Usage } from "@earendil-works/pi-ai";
-import type { CompactionResult, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { CompactionResult, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { throwIfAborted } from "../errors.js";
-import type { FinalizedToolPair } from "../evidence/references.js";
+import { estimateProjection } from "../runtime/budget.js";
 import { stableFingerprint } from "../stable-json.js";
 import { type ContextManagementCompactionDetailsV1, createCompactionDetails } from "./details.js";
 import { generateCheckpoint } from "./generator.js";
 import type { CompactableSelection } from "./selection.js";
-import { buildNormalizedCompactorSource } from "./source.js";
 
 export interface PreparationSnapshot {
 	readonly runtimeGeneration: number;
@@ -15,7 +14,6 @@ export interface PreparationSnapshot {
 	readonly coverageEntryIds: readonly string[];
 	readonly firstKeptEntryId: string;
 	readonly sourceFingerprint: string;
-	readonly focus: string | null;
 }
 
 export interface CheckpointCandidate {
@@ -35,38 +33,39 @@ function coverageIds(entries: readonly SessionEntry[], selection: CompactableSel
 }
 
 export async function createCheckpointCandidate(input: {
+	readonly pi: ExtensionAPI;
 	readonly context: ExtensionContext;
 	readonly selection: CompactableSelection;
 	readonly contextEntries: readonly SessionEntry[];
-	readonly evidencePairs: readonly FinalizedToolPair[];
 	readonly runtimeGeneration: number;
 	readonly branchEpoch: number;
 	readonly installedCheckpointEntryId: string | null;
-	readonly hardLimit: number;
 	readonly tokensBefore: number;
-	readonly focus?: string;
+	readonly maxTokens: number;
+	readonly calibration: number;
 	readonly signal?: AbortSignal;
 	readonly regenerateOnce: boolean;
 }): Promise<CheckpointCandidate> {
 	throwIfAborted(input.signal);
-	const model = input.context.model;
-	const supportsImages = model?.input.includes("image") ?? false;
-	const source = buildNormalizedCompactorSource({
-		messages: input.selection.newlyEligibleMessages,
-		...(input.selection.previousCheckpoint === undefined
-			? {}
-			: { previousCheckpoint: input.selection.previousCheckpoint }),
-		evidencePairs: input.evidencePairs,
-		supportsImages,
-	});
-	throwIfAborted(input.signal);
-	const sourceFingerprint = stableFingerprint(source.fingerprintInput);
+	const sourceFingerprint = stableFingerprint(
+		input.selection.newlyEligibleMessages.map((message) => {
+			if (message.role === "toolResult") {
+				return { role: message.role, toolCallId: message.toolCallId, toolName: message.toolName };
+			}
+			if (message.role === "compactionSummary" || message.role === "branchSummary") {
+				return { role: message.role, summary: message.summary };
+			}
+			return { role: message.role };
+		}),
+	);
 	const generated = await generateCheckpoint({
 		context: input.context,
-		source,
-		hardLimit: input.hardLimit,
+		pi: input.pi,
+		messages: input.selection.newlyEligibleMessages,
+		shadowedTokenCount: Math.max(1, estimateProjection(input.selection.newlyEligibleMessages)),
+		maxTokens: input.maxTokens,
+		calibration: input.calibration,
 		...(input.signal === undefined ? {} : { signal: input.signal }),
-		...(input.focus === undefined ? {} : { focus: input.focus }),
 		regenerateOnce: input.regenerateOnce,
 	});
 	const snapshot: PreparationSnapshot = Object.freeze({
@@ -76,14 +75,12 @@ export async function createCheckpointCandidate(input: {
 		coverageEntryIds: coverageIds(input.contextEntries, input.selection),
 		firstKeptEntryId: input.selection.firstKeptEntryId,
 		sourceFingerprint,
-		focus: input.focus?.trim() || null,
 	});
 	const details = createCompactionDetails({
 		summary: generated.summary,
 		coveredThroughEntryId: input.selection.coveredThroughEntryId,
 		firstKeptEntryId: input.selection.firstKeptEntryId,
 		sourceFingerprint,
-		evidenceReferences: [...source.allowedEvidenceReferences],
 	});
 	return Object.freeze({
 		snapshot,
@@ -101,14 +98,12 @@ export function isCandidateCompatible(input: {
 	readonly branchEpoch: number;
 	readonly installedCheckpointEntryId: string | null;
 	readonly contextEntries: readonly SessionEntry[];
-	readonly focus?: string;
 }): boolean {
 	const snapshot = input.candidate.snapshot;
 	if (
 		snapshot.runtimeGeneration !== input.runtimeGeneration ||
 		snapshot.branchEpoch !== input.branchEpoch ||
-		snapshot.installedCheckpointEntryId !== input.installedCheckpointEntryId ||
-		snapshot.focus !== (input.focus?.trim() || null)
+		snapshot.installedCheckpointEntryId !== input.installedCheckpointEntryId
 	) {
 		return false;
 	}

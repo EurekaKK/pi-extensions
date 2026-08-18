@@ -1,162 +1,124 @@
-import {
-	type Api,
-	createFauxCore,
-	fauxAssistantMessage,
-	fauxText,
-	fauxToolCall,
-	type Model,
-} from "@earendil-works/pi-ai";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { describe, expect, it } from "vitest";
 import { generateCheckpoint } from "../src/compaction/generator.js";
-import type { NormalizedCompactorSource } from "../src/compaction/source.js";
-
-function fixture() {
-	const faux = createFauxCore({
-		api: "context-management-generator-faux-api",
-		provider: "context-management-generator-faux",
-		models: [{ id: "fixture", contextWindow: 200_000, maxTokens: 32_000 }],
-		tokensPerSecond: 0,
-	});
-	const context = {
-		model: faux.getModel() as Model<Api>,
-		thinkingLevel: "high",
-		modelRegistry: {
-			getProvider: () => faux,
-			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fixture-key" }),
-		},
-	} as unknown as ExtensionContext;
-	const source: NormalizedCompactorSource = {
-		content: [{ type: "text", text: '<context-management-data role="user">state</context-management-data>' }],
-		allowedEvidenceReferences: new Set(),
-		estimatedTokens: 20,
-		fingerprintInput: "state",
-	};
-	return { context, faux, source };
-}
+import { CHECKPOINT_PREAMBLE, COMPACTION_INSTRUCTION, SUMMARY_OPEN_TAG } from "../src/constants.js";
+import { ContextManagementError } from "../src/errors.js";
+import { userMessage } from "./harness.js";
 
 describe("checkpoint generator", () => {
-	it("does not send or regenerate when the operation is already aborted", async () => {
-		const test = fixture();
-		const controller = new AbortController();
-		controller.abort();
-		await expect(
-			generateCheckpoint({
-				context: test.context,
-				source: test.source,
-				hardLimit: 20_000,
-				signal: controller.signal,
-				regenerateOnce: true,
-			}),
-		).rejects.toMatchObject({ code: "context_management.operation_aborted" });
-		expect(test.faux.state.callCount).toBe(0);
+	it("replays system, tools, and the eight-section instruction, then frames the checkpoint", async () => {
+		const { pi, context, faux } = createGeneratorHost();
+		let sawInstruction = false;
+		faux.setResponses([
+			(request) => {
+				const last = request.messages.at(-1);
+				const lastText =
+					last?.role === "user"
+						? typeof last.content === "string"
+							? last.content
+							: last.content.find((block) => block.type === "text")?.text
+						: undefined;
+				sawInstruction =
+					request.systemPrompt === "system prompt" &&
+					request.tools?.some((tool) => tool.name === "bash") === true &&
+					lastText === COMPACTION_INSTRUCTION;
+				return fauxAssistantMessage("## Next Step\n- continue");
+			},
+		]);
+		const generated = await generateCheckpoint({
+			context,
+			pi,
+			messages: [userMessage("old work")],
+			shadowedTokenCount: 10_000,
+			maxTokens: 1_024,
+			calibration: 1,
+			regenerateOnce: false,
+		});
+		expect(sawInstruction).toBe(true);
+		expect(generated.summary.startsWith(CHECKPOINT_PREAMBLE)).toBe(true);
+		expect(generated.summary).toContain(`${SUMMARY_OPEN_TAG}\n## Next Step\n- continue`);
+		expect(faux.state.callCount).toBe(1);
 	});
 
-	it("regenerates exactly once for a mechanically invalid blocking candidate", async () => {
-		const test = fixture();
-		test.faux.setResponses([fauxAssistantMessage(""), fauxAssistantMessage("# Checkpoint\n\nValid.")]);
-		const checkpoint = await generateCheckpoint({
-			context: test.context,
-			source: test.source,
-			hardLimit: 20_000,
+	it("regenerates once after empty output", async () => {
+		const { pi, context, faux } = createGeneratorHost();
+		faux.setResponses([fauxAssistantMessage("   "), fauxAssistantMessage("## Current Work\n- still going")]);
+		const generated = await generateCheckpoint({
+			context,
+			pi,
+			messages: [userMessage("history")],
+			shadowedTokenCount: 10_000,
+			maxTokens: 1_024,
+			calibration: 1,
 			regenerateOnce: true,
 		});
-		expect(checkpoint.summary).toBe("# Checkpoint\n\nValid.");
-		expect(test.faux.state.callCount).toBe(2);
+		expect(faux.state.callCount).toBe(2);
+		expect(generated.summary).toContain("## Current Work");
 	});
 
-	it("does not immediately regenerate an invalid background candidate", async () => {
-		const test = fixture();
-		test.faux.setResponses([fauxAssistantMessage(""), fauxAssistantMessage("unused")]);
+	it("aborts before calling the provider", async () => {
+		const { pi, context, faux } = createGeneratorHost();
 		await expect(
 			generateCheckpoint({
-				context: test.context,
-				source: test.source,
-				hardLimit: 20_000,
+				context,
+				pi,
+				messages: [userMessage("history")],
+				shadowedTokenCount: 10_000,
+				maxTokens: 1_024,
+				calibration: 1,
+				signal: AbortSignal.abort(),
 				regenerateOnce: false,
 			}),
-		).rejects.toMatchObject({ code: "context_management.checkpoint_validation_failure" });
-		expect(test.faux.state.callCount).toBe(1);
+		).rejects.toMatchObject({ code: "context_management.operation_aborted" });
+		expect(faux.state.callCount).toBe(0);
 	});
 
-	it("retries transient transport failures without consuming mechanical regeneration", async () => {
-		vi.useFakeTimers();
-		try {
-			const test = fixture();
-			test.faux.setResponses([
-				(_context, options) => {
-					expect(options?.timeoutMs).toBe(300_000);
-					expect(options?.maxRetries).toBe(0);
-					return fauxAssistantMessage("", { stopReason: "error", errorMessage: "stream terminated" });
-				},
-				fauxAssistantMessage("# Checkpoint\n\nRecovered."),
-			]);
-			const pending = generateCheckpoint({
-				context: test.context,
-				source: test.source,
-				hardLimit: 20_000,
-				regenerateOnce: false,
-			});
-			await vi.advanceTimersByTimeAsync(2_000);
-			expect((await pending).summary).toBe("# Checkpoint\n\nRecovered.");
-			expect(test.faux.state.callCount).toBe(2);
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-
-	it("does not spend mechanical regeneration after transport retries are exhausted", async () => {
-		vi.useFakeTimers();
-		try {
-			const test = fixture();
-			test.faux.setResponses(
-				Array.from({ length: 4 }, () =>
-					fauxAssistantMessage("", { stopReason: "error", errorMessage: "stream terminated" }),
-				),
-			);
-			const pending = generateCheckpoint({
-				context: test.context,
-				source: test.source,
-				hardLimit: 20_000,
-				regenerateOnce: true,
-			});
-			const rejected = expect(pending).rejects.toMatchObject({
-				code: "context_management.compactor_transport_failure",
-			});
-			await vi.advanceTimersByTimeAsync(14_000);
-			await rejected;
-			expect(test.faux.state.callCount).toBe(4);
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-
-	it("rejects an infeasible compactor request before sending it", async () => {
-		const test = fixture();
+	it("fails closed when the framed checkpoint is not smaller than the shadowed span", async () => {
+		const { pi, context } = createGeneratorHost();
 		await expect(
 			generateCheckpoint({
-				context: test.context,
-				source: { ...test.source, estimatedTokens: 190_000 },
-				hardLimit: 20_000,
-				regenerateOnce: true,
-			}),
-		).rejects.toMatchObject({ code: "context_management.compaction_infeasible" });
-		expect(test.faux.state.callCount).toBe(0);
-	});
-
-	it("rejects a text-bearing tool-use response instead of treating it as a finished checkpoint", async () => {
-		const test = fixture();
-		test.faux.setResponses([
-			fauxAssistantMessage([fauxText("partial"), fauxToolCall("unexpected", {})], { stopReason: "toolUse" }),
-		]);
-		await expect(
-			generateCheckpoint({
-				context: test.context,
-				source: test.source,
-				hardLimit: 20_000,
+				context,
+				pi,
+				messages: [userMessage("tiny")],
+				shadowedTokenCount: 1,
+				maxTokens: 1_024,
+				calibration: 1,
 				regenerateOnce: false,
 			}),
-		).rejects.toMatchObject({ code: "context_management.checkpoint_validation_failure" });
-		expect(test.faux.state.callCount).toBe(1);
+		).rejects.toBeInstanceOf(ContextManagementError);
 	});
 });
+
+function createGeneratorHost(): {
+	readonly pi: ExtensionAPI;
+	readonly context: ExtensionContext;
+	readonly faux: ReturnType<typeof fauxProvider>;
+} {
+	const faux = fauxProvider({
+		models: [{ id: "faux-1", name: "Faux", contextWindow: 128_000, maxTokens: 16_384 }],
+	});
+	const model = faux.getModel();
+	faux.setResponses([fauxAssistantMessage("## Next Step\n- continue")]);
+	const pi = {
+		getActiveTools: () => ["bash"],
+		getAllTools: () => [
+			{
+				name: "bash",
+				description: "Run a command",
+				parameters: { type: "object", properties: {} },
+				sourceInfo: { path: "/bash", source: "pi", scope: "temporary", origin: "top-level" },
+			},
+		],
+	} as unknown as ExtensionAPI;
+	const context = {
+		model,
+		getSystemPrompt: () => "system prompt",
+		sessionManager: { getSessionId: () => "session-1" },
+		modelRegistry: {
+			getProvider: (provider: string) => (provider === model.provider ? faux.provider : undefined),
+			getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test-key" }),
+		},
+	} as unknown as ExtensionContext;
+	return { pi, context, faux };
+}

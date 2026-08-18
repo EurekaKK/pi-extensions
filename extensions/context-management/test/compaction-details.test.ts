@@ -27,17 +27,15 @@ function compaction(input: {
 }
 
 describe("checkpoint durable details", () => {
-	it("round trips strict details and canonicalizes reachable references", () => {
+	it("round trips strict details without evidence references", () => {
 		const details = createCompactionDetails({
 			summary: "checkpoint",
 			coveredThroughEntryId: "covered",
 			firstKeptEntryId: "kept",
 			sourceFingerprint: "source",
-			evidenceReferences: ["cm-evidence:v1:z", "cm-evidence:v1:a", "cm-evidence:v1:z"],
 			now: new Date("2026-08-16T00:00:00.000Z"),
 		});
 		expect(parseCompactionDetails(details)).toEqual(details);
-		expect(details.evidenceReferences).toEqual(["cm-evidence:v1:a", "cm-evidence:v1:z"]);
 		expect(parseCompactionDetails({ ...details, sourceFingerprint: "not-a-hash" })).toBeNull();
 	});
 
@@ -47,7 +45,6 @@ describe("checkpoint durable details", () => {
 			coveredThroughEntryId: "covered",
 			firstKeptEntryId: "kept",
 			sourceFingerprint: "source",
-			evidenceReferences: [],
 		});
 		expect(
 			restoreLatestCheckpoint([compaction({ id: "cp", summary: "checkpoint", firstKeptEntryId: "kept", details })]),

@@ -1,8 +1,7 @@
-import type { ContextEvent } from "@earendil-works/pi-coding-agent";
+import { type ContextEvent, type SessionEntry, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { selectCompactable } from "../src/compaction/selection.js";
 import { conversationUnits, selectProtectedTail } from "../src/runtime/branch.js";
-import { selectionFromNative } from "../src/runtime/coordinator.js";
 
 type AgentMessage = ContextEvent["messages"][number];
 
@@ -68,6 +67,13 @@ describe("protected tail", () => {
 		expect(units.map((unit) => unit.start)).toEqual([0, 1, 2]);
 	});
 
+	it("keeps only the newest conversation unit when retainTokens is 0", () => {
+		const messages = [user("first"), user("second"), user("third")];
+		const tail = selectProtectedTail(messages, 0);
+		expect(tail.startIndex).toBe(2);
+		expect(tail.messages).toEqual([messages[2]]);
+	});
+
 	it("never places an unfinished tool call in the compactable prefix", () => {
 		const unfinished = toolTurn("unfinished")[0];
 		if (unfinished === undefined) throw new Error("Expected a tool call fixture.");
@@ -89,27 +95,60 @@ describe("protected tail", () => {
 		).toBeNull();
 	});
 
-	it("starts native rolling coverage at the previous compaction's retained boundary", () => {
+	it("declines when the whole surface is one tool pair", () => {
+		const messages = [user("only"), ...toolTurn("result")];
+		expect(
+			selectCompactable({
+				messages,
+				contextEntries: entriesFrom(messages),
+				tailTarget: 0,
+				currentRunEntryId: null,
+			}),
+		).toBeNull();
+	});
+
+	it("maps retainTokens 0 to the newest unit and a pressure retain budget to no compactable prefix", () => {
+		const messages = [user("first"), user("second"), user("third")];
+		const compactNow = selectCompactable({
+			messages,
+			contextEntries: entriesFrom(messages),
+			tailTarget: 0,
+			currentRunEntryId: null,
+		});
+		expect(compactNow?.firstKeptEntryId).toBe("entry-2");
+		expect(compactNow?.newlyEligibleMessages).toHaveLength(2);
+		expect(
+			selectCompactable({
+				messages,
+				contextEntries: entriesFrom(messages),
+				tailTarget: 1_000_000,
+				currentRunEntryId: null,
+			}),
+		).toBeNull();
+	});
+
+	it("keeps the newest whole tool-call/result pair when retainTokens is 0", () => {
+		const messages = [user("old"), ...toolTurn("old-result"), user("kept"), ...toolTurn("kept-result")];
+		const selection = selectCompactable({
+			messages,
+			contextEntries: entriesFrom(messages),
+			tailTarget: 0,
+			currentRunEntryId: null,
+		});
+		expect(selection?.firstKeptEntryId).toBe("entry-3");
+		expect(selection?.tail.messages.at(-1)).toMatchObject({ role: "toolResult" });
+		const eligible = JSON.stringify(selection?.newlyEligibleMessages);
+		expect(eligible).toContain("old-result");
+		expect(eligible).not.toContain("kept-result");
+	});
+
+	it("starts rolling coverage at the previous compaction's retained boundary", () => {
 		const previous = user("previous retained tail");
 		const newer = user("newer history");
 		const kept = user("kept");
-		const branch = [
+		const contextEntries: SessionEntry[] = [
 			{
-				type: "message" as const,
-				id: "old",
-				parentId: null,
-				timestamp: new Date(0).toISOString(),
-				message: user("old"),
-			},
-			{
-				type: "message" as const,
-				id: "previous-kept",
-				parentId: "old",
-				timestamp: new Date(1).toISOString(),
-				message: previous,
-			},
-			{
-				type: "compaction" as const,
+				type: "compaction",
 				id: "checkpoint",
 				parentId: "previous-kept",
 				timestamp: new Date(2).toISOString(),
@@ -118,39 +157,46 @@ describe("protected tail", () => {
 				tokensBefore: 100,
 			},
 			{
-				type: "message" as const,
+				type: "message",
+				id: "previous-kept",
+				parentId: "old",
+				timestamp: new Date(1).toISOString(),
+				message: previous,
+			},
+			{
+				type: "message",
 				id: "newer",
 				parentId: "checkpoint",
 				timestamp: new Date(3).toISOString(),
 				message: newer,
 			},
 			{
-				type: "message" as const,
+				type: "message",
 				id: "kept",
 				parentId: "newer",
 				timestamp: new Date(4).toISOString(),
 				message: kept,
 			},
 		];
-		const selection = selectionFromNative({
-			type: "session_before_compact",
-			preparation: {
-				firstKeptEntryId: "kept",
-				messagesToSummarize: [previous, newer],
-				turnPrefixMessages: [],
-				isSplitTurn: false,
-				tokensBefore: 100,
-				previousSummary: "old checkpoint",
-				fileOps: { read: new Set(), written: new Set(), edited: new Set() },
-				settings: { enabled: true, reserveTokens: 1, keepRecentTokens: 1 },
-			},
-			branchEntries: branch,
-			reason: "manual",
-			willRetry: false,
-			signal: new AbortController().signal,
+		const selection = selectCompactable({
+			messages: contextEntries.flatMap((entry) => sessionEntryToContextMessages(entry)),
+			contextEntries,
+			tailTarget: 0,
+			currentRunEntryId: null,
 		});
-		expect(selection.firstEligibleEntryId).toBe("previous-kept");
-		expect(selection.coveredThroughEntryId).toBe("newer");
-		expect(selection.previousCheckpoint).toBe("old checkpoint");
+		expect(selection?.firstKeptEntryId).toBe("kept");
+		expect(selection?.firstEligibleEntryId).toBe("previous-kept");
+		expect(selection?.coveredThroughEntryId).toBe("newer");
+		expect(selection?.previousCheckpoint).toBe("old checkpoint");
 	});
 });
+
+function entriesFrom(messages: readonly AgentMessage[]): SessionEntry[] {
+	return messages.map((message, index) => ({
+		type: "message" as const,
+		id: `entry-${index}`,
+		parentId: index === 0 ? null : `entry-${index - 1}`,
+		timestamp: new Date(index * 1_000).toISOString(),
+		message,
+	}));
+}

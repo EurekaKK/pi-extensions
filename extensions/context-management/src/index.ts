@@ -1,36 +1,46 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { type ContextManagementConfigV1, type FileMutationQueue, initializeContextManagementConfig } from "./config.js";
 import { STATUS_COMMAND } from "./constants.js";
-import { registerEvidenceTool } from "./evidence/tool.js";
-import { registerMemoryTools } from "./memory/tools.js";
 import { ContextCoordinator } from "./runtime/coordinator.js";
 import { createRuntimeState } from "./runtime/state.js";
 import { renderContextStatus } from "./runtime/status.js";
+import { maybeSpillToolResult } from "./spill.js";
 
-export function registerContextManagementExtension(pi: ExtensionAPI): void {
+export interface LoadContextManagementDependencies {
+	readonly agentDir: string;
+	readonly withFileMutationQueue: FileMutationQueue;
+}
+
+function notify(context: ExtensionContext, message: string, type: "info" | "warning" | "error" = "warning"): void {
+	if (!context.hasUI) return;
+	try {
+		context.ui.notify(message, type);
+	} catch {
+		// Advisory UI only.
+	}
+}
+
+export function registerContextManagementExtension(
+	pi: ExtensionAPI,
+	config: ContextManagementConfigV1,
+	dependencies: LoadContextManagementDependencies,
+): void {
 	const state = createRuntimeState();
-	const coordinator = new ContextCoordinator(pi, state);
-
-	registerMemoryTools(pi, state.memory);
-	registerEvidenceTool(pi, state.evidence);
+	const coordinator = new ContextCoordinator(pi, state, config);
 
 	pi.registerCommand(STATUS_COMMAND, {
-		description: "Show context budget, compaction, evidence, and repository-memory status",
+		description: "Show context budget, compaction, and prune status",
 		async handler(_argumentsText, context) {
-			context.ui.notify(renderContextStatus(state, context), "info");
+			notify(context, renderContextStatus(state, context), "info");
 		},
 	});
 
-	pi.on("session_start", async (_event, context) => {
-		try {
-			await coordinator.sessionStart(context);
-		} catch (error) {
-			if (context.mode === "tui") {
-				context.ui.notify(`Context management started without Repository Memory: ${String(error)}`, "warning");
-			}
-		}
+	pi.on("session_start", (_event, context) => {
+		coordinator.sessionStart(context);
 	});
-	pi.on("before_agent_start", async (event, context) => {
-		await coordinator.beforeAgentStart(event.prompt, context);
+	pi.on("before_agent_start", (event, context) => {
+		coordinator.beforeAgentStart(event.prompt, context);
 	});
 	pi.on("context", (event, context) => coordinator.context(event, context));
 	pi.on("agent_end", (event) => coordinator.agentEnd(event));
@@ -39,6 +49,49 @@ export function registerContextManagementExtension(pi: ExtensionAPI): void {
 	pi.on("session_compact", (event, context) => coordinator.sessionCompact(event, context));
 	pi.on("session_tree", (_event, context) => coordinator.sessionTree(context));
 	pi.on("session_shutdown", (_event, context) => coordinator.shutdown(context));
+	pi.on("tool_result", async (event, context) => {
+		try {
+			return await maybeSpillToolResult({
+				event,
+				sessionId: context.sessionManager.getSessionId(),
+				agentDir: dependencies.agentDir,
+				maxInlineBytes: config.spill.maxInlineBytes,
+				withFileMutationQueue: dependencies.withFileMutationQueue,
+			});
+		} catch {
+			return undefined;
+		}
+	});
 }
 
-export default registerContextManagementExtension;
+function registerDisabledContextManagement(pi: ExtensionAPI, error: unknown): void {
+	const message = error instanceof Error ? error.message : String(error);
+	let shown = false;
+	pi.on("session_start", (_event, context) => {
+		if (shown || !context.hasUI) return;
+		shown = true;
+		notify(context, `context-management is disabled: ${message}`);
+	});
+}
+
+export async function loadContextManagementExtension(
+	pi: ExtensionAPI,
+	dependencies: LoadContextManagementDependencies,
+): Promise<void> {
+	try {
+		const initialized = await initializeContextManagementConfig(dependencies);
+		registerContextManagementExtension(pi, initialized.config, dependencies);
+	} catch (error) {
+		registerDisabledContextManagement(pi, error);
+	}
+}
+
+export default async function contextManagement(pi: ExtensionAPI): Promise<void> {
+	await loadContextManagementExtension(pi, {
+		agentDir: getAgentDir(),
+		withFileMutationQueue,
+	});
+}
+
+export { ContextManagementConfigurationError, DEFAULT_CONFIG } from "./config.js";
+export type { ContextManagementConfigV1 };

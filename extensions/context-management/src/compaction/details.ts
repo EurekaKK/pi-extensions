@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { CompactionEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { COMPACTION_DETAILS_SCHEMA } from "../constants.js";
-import { parseEvidenceReference } from "../evidence/references.js";
 import { sha256Hex } from "../stable-json.js";
 
 export interface ContextManagementCompactionDetailsV1 {
@@ -13,7 +12,6 @@ export interface ContextManagementCompactionDetailsV1 {
 	readonly sourceFingerprint: string;
 	readonly checkpointFingerprint: string;
 	readonly createdAt: string;
-	readonly evidenceReferences: readonly string[];
 }
 
 export interface InstalledCheckpoint {
@@ -43,22 +41,10 @@ export function parseCompactionDetails(value: unknown): ContextManagementCompact
 		typeof value.checkpointFingerprint !== "string" ||
 		!/^sha256:[0-9a-f]{64}$/.test(value.checkpointFingerprint) ||
 		typeof value.createdAt !== "string" ||
-		!Number.isFinite(Date.parse(value.createdAt)) ||
-		!Array.isArray(value.evidenceReferences)
+		!Number.isFinite(Date.parse(value.createdAt))
 	) {
 		return null;
 	}
-	const references: string[] = [];
-	for (const reference of value.evidenceReferences) {
-		if (typeof reference !== "string") return null;
-		try {
-			parseEvidenceReference(reference);
-		} catch {
-			return null;
-		}
-		references.push(reference);
-	}
-	if (new Set(references).size !== references.length) return null;
 	return Object.freeze({
 		type: COMPACTION_DETAILS_SCHEMA,
 		schemaVersion: 1,
@@ -68,7 +54,6 @@ export function parseCompactionDetails(value: unknown): ContextManagementCompact
 		sourceFingerprint: value.sourceFingerprint,
 		checkpointFingerprint: value.checkpointFingerprint,
 		createdAt: value.createdAt,
-		evidenceReferences: Object.freeze([...references].sort()),
 	});
 }
 
@@ -77,7 +62,6 @@ export function createCompactionDetails(input: {
 	readonly coveredThroughEntryId: string;
 	readonly firstKeptEntryId: string;
 	readonly sourceFingerprint: string;
-	readonly evidenceReferences: readonly string[];
 	readonly now?: Date;
 }): ContextManagementCompactionDetailsV1 {
 	const sourceHash = /^[0-9a-f]{64}$/.test(input.sourceFingerprint)
@@ -92,7 +76,6 @@ export function createCompactionDetails(input: {
 		sourceFingerprint: `sha256:${sourceHash}`,
 		checkpointFingerprint: `sha256:${sha256Hex(input.summary)}`,
 		createdAt: (input.now ?? new Date()).toISOString(),
-		evidenceReferences: Object.freeze([...new Set(input.evidenceReferences)].sort()),
 	});
 }
 

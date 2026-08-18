@@ -1,21 +1,11 @@
 export type ContextManagementErrorCode =
 	| "context_management.context_estimate_failure"
-	| "context_management.context_cannot_fit"
 	| "context_management.compaction_infeasible"
+	| "context_management.compaction_busy"
 	| "context_management.compactor_auth_failure"
 	| "context_management.compactor_transport_failure"
 	| "context_management.checkpoint_validation_failure"
 	| "context_management.checkpoint_persistence_failure"
-	| "context_management.evidence_reference_invalid"
-	| "context_management.evidence_not_reachable"
-	| "context_management.evidence_admission_failure"
-	| "context_management.memory_unavailable"
-	| "context_management.memory_validation_failure"
-	| "context_management.memory_lock_timeout"
-	| "context_management.memory_content_too_large"
-	| "context_management.memory_store_too_large"
-	| "context_management.memory_supersession_conflict"
-	| "context_management.memory_forget_conflict"
 	| "context_management.operation_aborted";
 
 export class ContextManagementError extends Error {

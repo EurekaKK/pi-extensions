@@ -1,32 +1,46 @@
-import { randomUUID } from "node:crypto";
-import {
-	type Api,
-	type AssistantMessage,
-	type Context,
-	type Model,
-	type Provider,
-	type ProviderHeaders,
-	retryAssistantCall,
-	type Usage,
+import type {
+	Api,
+	AssistantMessage,
+	Context,
+	Model,
+	Provider,
+	ProviderHeaders,
+	Tool,
+	Usage,
 } from "@earendil-works/pi-ai";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { retryAssistantCall } from "@earendil-works/pi-ai";
+import type { ContextEvent, ExtensionAPI, ExtensionContext, ToolInfo } from "@earendil-works/pi-coding-agent";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import {
-	CHECKPOINT_SYSTEM_PROMPT,
-	COMPACTION_GENERATION_MARGIN_TOKENS,
+	COMPACTION_INSTRUCTION,
 	COMPACTOR_REQUEST_TIMEOUT_MS,
 	COMPACTOR_TRANSPORT_MAX_RETRIES,
 	COMPACTOR_TRANSPORT_RETRY_BASE_DELAY_MS,
 } from "../constants.js";
 import { ContextManagementError, throwIfAborted } from "../errors.js";
-import { deriveContextBudget, estimateTextTokens } from "../runtime/budget.js";
-import { COMPACTOR_SOURCE_PREAMBLE, estimateCompactorPromptOverhead } from "./prompt.js";
-import type { NormalizedCompactorSource } from "./source.js";
+import { correctedEstimate, estimateFixedEnvelope, estimateProjection, estimateTextTokens } from "../runtime/budget.js";
+import { estimateInstructionTokens, frameCheckpoint } from "./prompt.js";
 import { validateCheckpointResponse } from "./validation.js";
+
+type AgentMessage = ContextEvent["messages"][number];
 
 export interface GeneratedCheckpoint {
 	readonly summary: string;
 	readonly usage: Usage;
 	readonly sourceEstimatedTokens: number;
+}
+
+function activeTools(pi: ExtensionAPI): ToolInfo[] {
+	const names = new Set(pi.getActiveTools());
+	return pi.getAllTools().filter((tool) => names.has(tool.name));
+}
+
+function toLlmTools(tools: readonly ToolInfo[]): Tool[] {
+	return tools.map((tool) => ({
+		name: tool.name,
+		description: tool.description,
+		parameters: tool.parameters,
+	}));
 }
 
 async function resolveProvider(
@@ -57,72 +71,63 @@ async function resolveProvider(
 	};
 }
 
-function compactorSuffix(focus?: string, correction?: string): string {
-	return [
-		focus === undefined || focus.trim().length === 0 ? undefined : `Compaction focus:\n${focus.trim()}`,
-		correction === undefined ? undefined : `The prior candidate was mechanically rejected: ${correction}`,
-	]
-		.filter((part): part is string => part !== undefined)
-		.join("\n\n");
-}
-
-function compactorContext(source: NormalizedCompactorSource, suffix: string): Context {
-	const content = [
-		{ type: "text" as const, text: COMPACTOR_SOURCE_PREAMBLE },
-		...source.content,
-		...(suffix.length === 0 ? [] : [{ type: "text" as const, text: `\n${suffix}` }]),
-	];
+function summarizerContext(input: {
+	readonly systemPrompt: string;
+	readonly tools: readonly ToolInfo[];
+	readonly messages: readonly AgentMessage[];
+}): Context {
 	return {
-		systemPrompt: CHECKPOINT_SYSTEM_PROMPT,
-		messages: [{ role: "user", content, timestamp: Date.now() }],
-		tools: [],
+		systemPrompt: input.systemPrompt,
+		messages: [
+			...convertToLlm([...input.messages]),
+			{
+				role: "user",
+				content: [{ type: "text", text: COMPACTION_INSTRUCTION }],
+				timestamp: Date.now(),
+			},
+		],
+		tools: toLlmTools(input.tools),
 	};
 }
 
 async function requestCheckpoint(input: {
 	readonly extensionContext: ExtensionContext;
+	readonly pi: ExtensionAPI;
 	readonly model: Model<Api>;
 	readonly provider: Provider;
-	readonly source: NormalizedCompactorSource;
-	readonly hardLimit: number;
+	readonly messages: readonly AgentMessage[];
+	readonly maxTokens: number;
 	readonly signal?: AbortSignal;
 	readonly apiKey?: string;
 	readonly headers?: ProviderHeaders;
 	readonly env?: Record<string, string>;
-	readonly focus?: string;
-	readonly correction?: string;
 }): Promise<AssistantMessage> {
 	throwIfAborted(input.signal);
-	const maxTokens = Math.min(input.model.maxTokens, input.hardLimit + COMPACTION_GENERATION_MARGIN_TOKENS);
-	if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
+	const tools = activeTools(input.pi);
+	const systemPrompt = input.extensionContext.getSystemPrompt();
+	const capacity =
+		estimateFixedEnvelope(systemPrompt, tools) +
+		estimateProjection(input.messages) +
+		estimateInstructionTokens() +
+		8 +
+		input.maxTokens;
+	if (capacity > input.model.contextWindow) {
 		throw new ContextManagementError(
 			"context_management.compaction_infeasible",
-			"The active model has no usable checkpoint output budget.",
+			`Compactor request estimate ${capacity} exceeds model context window ${input.model.contextWindow}.`,
 		);
 	}
-	const variablePrompt = compactorSuffix(input.focus, input.correction);
-	const budget = deriveContextBudget(input.model.contextWindow);
-	const estimatedCapacity =
-		input.source.estimatedTokens +
-		estimateCompactorPromptOverhead() +
-		estimateTextTokens(variablePrompt.length === 0 ? "" : `\n${variablePrompt}`) +
-		maxTokens +
-		budget.estimationMargin;
-	if (estimatedCapacity > input.model.contextWindow) {
-		throw new ContextManagementError(
-			"context_management.compaction_infeasible",
-			`Compactor request estimate ${estimatedCapacity} exceeds model context window ${input.model.contextWindow}.`,
-		);
-	}
-	const thinking = input.extensionContext.thinkingLevel;
-	const requestContext = compactorContext(input.source, variablePrompt);
-	const sessionId = `context-management-compactor-${randomUUID()}`;
+	const requestContext = summarizerContext({
+		systemPrompt,
+		tools,
+		messages: input.messages,
+	});
+	const sessionId = input.extensionContext.sessionManager.getSessionId();
 	const response = await retryAssistantCall(
 		async () =>
 			await input.provider
 				.streamSimple(input.model, requestContext, {
-					cacheRetention: "none",
-					maxTokens,
+					maxTokens: input.maxTokens,
 					maxRetries: 0,
 					timeoutMs: COMPACTOR_REQUEST_TIMEOUT_MS,
 					sessionId,
@@ -130,7 +135,6 @@ async function requestCheckpoint(input: {
 					...(input.apiKey === undefined ? {} : { apiKey: input.apiKey }),
 					...(input.headers === undefined ? {} : { headers: input.headers }),
 					...(input.env === undefined ? {} : { env: input.env }),
-					...(thinking === undefined || thinking === "off" ? {} : { reasoning: thinking }),
 				})
 				.result(),
 		{
@@ -155,10 +159,12 @@ async function requestCheckpoint(input: {
 
 export async function generateCheckpoint(input: {
 	readonly context: ExtensionContext;
-	readonly source: NormalizedCompactorSource;
-	readonly hardLimit: number;
+	readonly pi: ExtensionAPI;
+	readonly messages: readonly AgentMessage[];
+	readonly shadowedTokenCount: number;
+	readonly maxTokens: number;
+	readonly calibration: number;
 	readonly signal?: AbortSignal;
-	readonly focus?: string;
 	readonly regenerateOnce: boolean;
 }): Promise<GeneratedCheckpoint> {
 	throwIfAborted(input.signal);
@@ -166,26 +172,33 @@ export async function generateCheckpoint(input: {
 	if (model === undefined) {
 		throw new ContextManagementError("context_management.compaction_infeasible", "No active model is selected.");
 	}
+	const maxTokens = Math.min(input.maxTokens, model.maxTokens);
+	if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
+		throw new ContextManagementError(
+			"context_management.compaction_infeasible",
+			"The active model has no usable checkpoint output budget.",
+		);
+	}
 	const auth = await resolveProvider(input.context, model);
 	throwIfAborted(input.signal);
 	let correction: string | undefined;
 	const attempts = input.regenerateOnce ? 2 : 1;
+	const sourceEstimatedTokens = estimateProjection(input.messages);
 	for (let attempt = 0; attempt < attempts; attempt += 1) {
 		throwIfAborted(input.signal);
 		let response: AssistantMessage;
 		try {
 			response = await requestCheckpoint({
 				extensionContext: input.context,
+				pi: input.pi,
 				model,
 				provider: auth.provider,
-				source: input.source,
-				hardLimit: input.hardLimit,
+				messages: input.messages,
+				maxTokens,
 				...(input.signal === undefined ? {} : { signal: input.signal }),
 				...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
 				...(auth.headers === undefined ? {} : { headers: auth.headers }),
 				...(auth.env === undefined ? {} : { env: auth.env }),
-				...(input.focus === undefined ? {} : { focus: input.focus }),
-				...(correction === undefined ? {} : { correction }),
 			});
 		} catch (error) {
 			if (error instanceof ContextManagementError) throw error;
@@ -194,15 +207,22 @@ export async function generateCheckpoint(input: {
 				error instanceof Error ? error.message : String(error),
 			);
 		}
-		const validation = validateCheckpointResponse(response, input.hardLimit, input.source.allowedEvidenceReferences);
-		if (validation.ok) {
-			return Object.freeze({
-				summary: validation.text,
-				usage: structuredClone(response.usage),
-				sourceEstimatedTokens: input.source.estimatedTokens,
-			});
+		const validation = validateCheckpointResponse(response);
+		if (!validation.ok) {
+			correction = validation.reason;
+			continue;
 		}
-		correction = validation.reason;
+		const framed = frameCheckpoint(validation.text);
+		const framedTokens = correctedEstimate(estimateTextTokens(framed), input.calibration);
+		if (framedTokens >= input.shadowedTokenCount) {
+			correction = `summary is not smaller than the shadowed content (${framedTokens} >= ${input.shadowedTokenCount})`;
+			continue;
+		}
+		return Object.freeze({
+			summary: framed,
+			usage: structuredClone(response.usage),
+			sourceEstimatedTokens,
+		});
 	}
 	throw new ContextManagementError(
 		"context_management.checkpoint_validation_failure",
