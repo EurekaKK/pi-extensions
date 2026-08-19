@@ -8,6 +8,5 @@ export const REPORT_TOOL_NAME = "report";
 export const DESCRIPTOR_ENTRY_TYPE = "subagent:descriptor";
 export const SETTLEMENT_MESSAGE_TYPE = "subagent:settlement";
 export const REPORT_MESSAGE_TYPE = "subagent:report";
-export const PARENT_STATUS_KEY = "sub-agent";
 export const CHILD_SESSIONS_DIRECTORY_NAME = "sub-agent/sessions";
 export const DESCRIPTOR_VERSION = 1 as const;

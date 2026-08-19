@@ -7,7 +7,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createPiChildSessionFactory } from "./child-session.js";
 import { type FileMutationQueue, initializeSubAgentConfig, type SubAgentConfigurationError } from "./config.js";
-import { CHILD_SESSIONS_DIRECTORY_NAME, DESCRIPTOR_ENTRY_TYPE, PARENT_STATUS_KEY } from "./constants.js";
+import { CHILD_SESSIONS_DIRECTORY_NAME, DESCRIPTOR_ENTRY_TYPE } from "./constants.js";
 import type { SubAgentConfigV2, SubAgentDescriptorV1 } from "./domain.js";
 import { SubagentManager } from "./runtime.js";
 import { registerParentTools } from "./tools.js";
@@ -104,34 +104,20 @@ export function registerSubAgent(pi: ExtensionAPI, config: SubAgentConfigV2): vo
 		return manager;
 	}
 
-	pi.on("session_start", async (_event, context) => {
+	pi.on("session_start", async () => {
 		state.generation += 1;
 		state.sessionId = undefined;
 		const previous = state.manager;
 		state.manager = undefined;
 		if (previous !== undefined) await previous.shutdown();
-		if (context.hasUI) {
-			try {
-				context.ui.setStatus(PARENT_STATUS_KEY, "sub-agent: ready");
-			} catch {
-				// Status is advisory.
-			}
-		}
 	});
 
-	pi.on("session_shutdown", async (_event, context) => {
+	pi.on("session_shutdown", async () => {
 		state.generation += 1;
 		state.sessionId = undefined;
 		const previous = state.manager;
 		state.manager = undefined;
 		if (previous !== undefined) await previous.shutdown();
-		if (context.hasUI) {
-			try {
-				context.ui.setStatus(PARENT_STATUS_KEY, undefined);
-			} catch {
-				// Status is advisory.
-			}
-		}
 	});
 
 	registerParentTools(
