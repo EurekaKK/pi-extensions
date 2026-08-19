@@ -8,7 +8,6 @@ agents:
     kwargs:
       thinking: high
       extensions:
-        - bash-permissions
         - context-management
         - todo
         - sub-agent

@@ -115,7 +115,6 @@ def test_install_pins_pi_and_skips_extensions_when_list_is_empty(
 def test_install_and_run_load_named_extensions_in_order(tmp_path: Path) -> None:
     environment = RecordingEnvironment()
     extensions = [
-        "bash-permissions",
         "context-management",
         "todo",
         "sub-agent",
@@ -231,7 +230,7 @@ def test_run_classifies_401_as_authentication_error(tmp_path: Path) -> None:
 
 def test_post_run_metadata_records_factors_and_isolation(tmp_path: Path) -> None:
     context = AgentContext()
-    agent = make_agent(tmp_path, extensions=["bash-permissions", "sub-agent"])
+    agent = make_agent(tmp_path, extensions=["todo", "sub-agent"])
 
     agent.populate_context_post_run(context)
 
@@ -239,7 +238,7 @@ def test_post_run_metadata_records_factors_and_isolation(tmp_path: Path) -> None
     assert context.metadata["parent_mode"] == "tui"
     assert context.metadata["model"] == "deepseek/deepseek-v4-flash"
     assert context.metadata["thinking"] == "high"
-    assert context.metadata["extension_bundle"] == ["bash-permissions", "sub-agent"]
+    assert context.metadata["extension_bundle"] == ["todo", "sub-agent"]
     assert context.metadata["isolation_flags"] == list(ISOLATION_FLAGS)
     assert context.metadata["instruction_delivery"] == "tui_bracketed_paste"
     assert context.metadata["usage_accounting_scope"] == "main_pi_session_only"

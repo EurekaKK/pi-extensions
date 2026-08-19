@@ -16,8 +16,7 @@ from pi_eval_harness.constants import (
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_EXTENSIONS = ROOT.parent / "extensions"
-FOUR_EXTENSIONS = [
-    "bash-permissions",
+SMOKE_EXTENSIONS = [
     "context-management",
     "todo",
     "sub-agent",
@@ -76,7 +75,7 @@ def test_install_only_extensions_mounts_tree_without_keys() -> None:
     config = load_config("install-only-extensions.yaml")
 
     assert config.install_only is True
-    assert_agent(config, FOUR_EXTENSIONS)
+    assert_agent(config, SMOKE_EXTENSIONS)
     assert mount_targets(config) == [REMOTE_EXTENSION_ROOT]
     assert REMOTE_MODEL_KEY_FILE not in mount_targets(config)
     assert REMOTE_TAVILY_KEY_FILE not in mount_targets(config)
@@ -85,13 +84,13 @@ def test_install_only_extensions_mounts_tree_without_keys() -> None:
 def test_runtime_smoke_extensions_mounts_tree_without_tavily_key() -> None:
     config = load_config("runtime-smoke-extensions.yaml")
 
-    assert_agent(config, FOUR_EXTENSIONS)
+    assert_agent(config, SMOKE_EXTENSIONS)
     targets = mount_targets(config)
     assert REMOTE_MODEL_KEY_FILE in targets
     assert REMOTE_RUNTIME_DIR in targets
     assert REMOTE_EXTENSION_ROOT in targets
     assert REMOTE_TAVILY_KEY_FILE not in targets
-    for name in FOUR_EXTENSIONS:
+    for name in SMOKE_EXTENSIONS:
         assert (REPO_EXTENSIONS / name / "package.json").is_file()
         assert (REPO_EXTENSIONS / name / "index.ts").is_file()
 

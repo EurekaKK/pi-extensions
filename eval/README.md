@@ -15,7 +15,6 @@ agents:
     kwargs:
       thinking: high
       extensions:
-        - bash-permissions
         - context-management
         - todo
         - sub-agent
@@ -92,7 +91,7 @@ uv sync --group dev
 | 仓库 `extensions/` | `/opt/pi-extensions` | `extensions` 非空 |
 | `eval/.secrets/tavily_api_key` | `/run/secrets/pi-eval-tavily-api-key` | 列表含 `tavily-web-search` |
 
-常用四扩展组合只需要模型 provider 那一把 key。
+常用扩展组合只需要模型 provider 那一把 key。
 
 ## 限制
 

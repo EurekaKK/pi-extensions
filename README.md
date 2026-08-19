@@ -68,7 +68,6 @@ npm test --workspaces
 
 | 名称 | 状态 | 说明 | 路径 |
 | --- | --- | --- | --- |
-| `bash-permissions` | experimental | 在 LLM 的内置 bash 调用执行前按三色规则判定风险 | [`extensions/bash-permissions`](./extensions/bash-permissions/) |
 | `context-management` | experimental | 按 dsh 方式 spill、prune 并生成结构化 Checkpoint，接管 Pi 原生 compaction | [`extensions/context-management`](./extensions/context-management/) |
 | `goal` | experimental | 通过模型工具管理 session Goal，并由 Goal Round Driver 自动续跑 active goal | [`extensions/goal`](./extensions/goal/) |
 | `sub-agent` | experimental | 在父 Pi 进程内运行 spawn/fork 子 Agent，支持后台 continuable 会话、report 与结算通知 | [`extensions/sub-agent`](./extensions/sub-agent/) |
