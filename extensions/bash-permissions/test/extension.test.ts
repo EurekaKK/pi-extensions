@@ -102,6 +102,19 @@ function bashCall(command: string, id = "call-1"): Record<string, unknown> {
 	return { type: "tool_call", toolCallId: id, toolName: "bash", input: { command } };
 }
 
+async function startSession(
+	yellowRules: readonly Record<string, unknown>[] = [],
+	redRules: readonly Record<string, unknown>[] = [],
+): Promise<{ readonly fake: FakeExtension; readonly context: ExtensionContext }> {
+	const { dependencies } = await makeDependencies(yellowRules, redRules);
+	const fake = createFakeExtension();
+	const { context } = createContext("/work/project");
+	registerBashPermissions(fake.api, dependencies);
+	await fake.invoke("session_start", sessionStartEvent, context);
+	await fake.invoke("turn_start", turnStartEvent, context);
+	return { fake, context };
+}
+
 describe("bash-permissions extension lifecycle", () => {
 	it("exports a Pi extension factory", () => {
 		expect(bashPermissions).toBeTypeOf("function");
@@ -116,14 +129,14 @@ describe("bash-permissions extension lifecycle", () => {
 
 		await fake.invoke("session_start", sessionStartEvent, context);
 
-		expect(ui.setStatus).not.toHaveBeenCalled();
+		expect(ui.setStatus).toHaveBeenCalledWith("bash-permissions", undefined);
 		expect(ui.notify).toHaveBeenCalledOnce();
 		expect(ui.notify.mock.calls[0]?.[0]).toContain(join(agentDir, "bash-permissions", "yellow.json"));
 		expect(ui.notify.mock.calls[0]?.[0]).toContain(join(agentDir, "bash-permissions", "red.json"));
 
 		await fake.invoke("session_start", { ...sessionStartEvent, reason: "reload" }, context);
 		expect(ui.notify).toHaveBeenCalledOnce();
-		expect(ui.setStatus).not.toHaveBeenCalled();
+		expect(ui.setStatus).toHaveBeenLastCalledWith("bash-permissions", undefined);
 	});
 
 	it("creates configuration without normal notifications in no-UI modes", async () => {
@@ -135,7 +148,7 @@ describe("bash-permissions extension lifecycle", () => {
 		await fake.invoke("session_start", sessionStartEvent, context);
 
 		expect(ui.notify).not.toHaveBeenCalled();
-		expect(ui.setStatus).not.toHaveBeenCalled();
+		expect(ui.setStatus).toHaveBeenCalledWith("bash-permissions", undefined);
 	});
 
 	it("leaves bash untouched before initialization and after a disabled initialization", async () => {
@@ -151,9 +164,7 @@ describe("bash-permissions extension lifecycle", () => {
 			writeFile(join(agentDir, "bash-permissions", "red.json"), JSON.stringify({ version: 1, rules: [] })),
 		]);
 
-		await expect(fake.invoke("session_start", sessionStartEvent, context)).rejects.toThrow(
-			/extension 没有正常运行.*bash 调用不受其保护/s,
-		);
+		await expect(fake.invoke("session_start", sessionStartEvent, context)).resolves.toBeUndefined();
 		expect(ui.setStatus).toHaveBeenCalledWith("bash-permissions", "bash-permissions: disabled");
 		expect(ui.notify).not.toHaveBeenCalled();
 		await expect(fake.invoke("tool_call", bashCall("danger"), context)).resolves.toBeUndefined();
@@ -163,7 +174,7 @@ describe("bash-permissions extension lifecycle", () => {
 		const yellowRule = { name: "危险", pattern: "danger", type: "review", message: "复审" };
 		const { dependencies, agentDir } = await makeDependencies([yellowRule]);
 		const fake = createFakeExtension();
-		const { context } = createContext("/work/project");
+		const { context, ui } = createContext("/work/project");
 		registerBashPermissions(fake.api, dependencies);
 		await fake.invoke("session_start", sessionStartEvent, context);
 		await fake.invoke("turn_start", turnStartEvent, context);
@@ -178,10 +189,24 @@ describe("bash-permissions extension lifecycle", () => {
 		await expect(fake.invoke("tool_call", bashCall("danger", "call-3"), context)).resolves.toBeUndefined();
 
 		await writeFile(join(agentDir, "bash-permissions", "red.json"), "{");
-		await expect(fake.invoke("session_start", { ...sessionStartEvent, reason: "reload" }, context)).rejects.toThrow(
-			/red\.json.*JSON 语法错误/,
-		);
+		await expect(
+			fake.invoke("session_start", { ...sessionStartEvent, reason: "reload" }, context),
+		).resolves.toBeUndefined();
+		expect(ui.setStatus).toHaveBeenCalledWith("bash-permissions", "bash-permissions: disabled");
+		expect(ui.notify).toHaveBeenLastCalledWith(expect.stringMatching(/red\.json.*JSON 语法错误/s), "error");
 		await expect(fake.invoke("tool_call", bashCall("danger", "call-4"), context)).resolves.toBeUndefined();
+
+		await writeFile(join(agentDir, "bash-permissions", "red.json"), JSON.stringify({ version: 1, rules: [] }));
+		await writeFile(
+			join(agentDir, "bash-permissions", "yellow.json"),
+			JSON.stringify({ version: 1, rules: [yellowRule] }),
+		);
+		await fake.invoke("session_start", { ...sessionStartEvent, reason: "reload" }, context);
+		expect(ui.setStatus).toHaveBeenLastCalledWith("bash-permissions", undefined);
+		await fake.invoke("turn_start", { ...turnStartEvent, turnIndex: 1 }, context);
+		await expect(fake.invoke("tool_call", bashCall("danger", "call-5"), context)).resolves.toMatchObject({
+			block: true,
+		});
 	});
 
 	it("clears state and status on session shutdown", async () => {
@@ -266,6 +291,105 @@ describe("bash-permissions tool-call integration", () => {
 		await fake.invoke("turn_start", { ...turnStartEvent, turnIndex: 1 }, context);
 
 		await expect(fake.invoke("tool_call", bashCall("danger", "call-2"), context)).resolves.toMatchObject({
+			block: true,
+		});
+	});
+
+	it("blocks a wrapped Command when the Policy pattern matches only the Matching View", async () => {
+		const { fake, context } = await startSession([
+			{ name: "删除", pattern: "^rm -rf", type: "review", message: "复审删除" },
+		]);
+
+		await expect(fake.invoke("tool_call", bashCall("sudo rm -rf /tmp/x"), context)).resolves.toMatchObject({
+			block: true,
+			reason: expect.stringContaining("黄色风险"),
+		});
+	});
+
+	it("peels env, assignments, bang, and path-prefixed wrappers from the start only", async () => {
+		const { fake, context } = await startSession([
+			{ name: "删除", pattern: "^rm -rf", type: "review", message: "复审删除" },
+		]);
+
+		for (const command of [
+			"env FOO=1 rm -rf /tmp/x",
+			"FOO=1 rm -rf /tmp/x",
+			"! rm -rf /tmp/x",
+			"/usr/bin/sudo -n rm -rf /tmp/x",
+			"/bin/sudo rm -rf /tmp/x",
+			"/sbin/doas rm -rf /tmp/x",
+			"/usr/sbin/doas rm -rf /tmp/x",
+			"sudo -- rm -rf /tmp/x",
+			"command rm -rf /tmp/x",
+			"time -p rm -rf /tmp/x",
+			"nohup rm -rf /tmp/x",
+			"exec -c rm -rf /tmp/x",
+			"sudo rm -rf \\\n/tmp/x",
+		]) {
+			await expect(fake.invoke("tool_call", bashCall(command), context), command).resolves.toMatchObject({
+				block: true,
+			});
+		}
+
+		await expect(fake.invoke("tool_call", bashCall("true; rm -rf /tmp/x"), context)).resolves.toBeUndefined();
+		await expect(
+			fake.invoke("tool_call", bashCall("if rm -rf /tmp/x; then true; fi"), context),
+		).resolves.toBeUndefined();
+		await expect(fake.invoke("tool_call", bashCall("sudo -x rm -rf /tmp/x"), context)).resolves.toBeUndefined();
+	});
+
+	it("keeps the remaining command path after peeling a wrapper", async () => {
+		const anchoredName = await startSession([
+			{ name: "删除", pattern: "^rm -rf", type: "review", message: "复审删除" },
+		]);
+		await expect(
+			anchoredName.fake.invoke("tool_call", bashCall("sudo /bin/rm -rf /tmp/x"), anchoredName.context),
+		).resolves.toBeUndefined();
+
+		const anchoredPath = await startSession([
+			{ name: "删除", pattern: "^/bin/rm -rf", type: "review", message: "复审删除" },
+		]);
+		await expect(
+			anchoredPath.fake.invoke("tool_call", bashCall("sudo /bin/rm -rf /tmp/x"), anchoredPath.context),
+		).resolves.toMatchObject({ block: true });
+	});
+
+	it("still matches quoted literals and bash -c payloads that remain in the view", async () => {
+		const { fake, context } = await startSession([
+			{ name: "删除", pattern: "rm -rf", type: "review", message: "复审删除" },
+		]);
+
+		await expect(fake.invoke("tool_call", bashCall("echo 'rm -rf /tmp/x'"), context)).resolves.toMatchObject({
+			block: true,
+		});
+		await expect(fake.invoke("tool_call", bashCall("bash -c 'rm -rf /tmp/x'"), context)).resolves.toMatchObject({
+			block: true,
+		});
+	});
+
+	it("stops peeling after 12 wrapper layers", async () => {
+		const { fake, context } = await startSession([
+			{ name: "删除", pattern: "^rm -rf", type: "review", message: "复审删除" },
+		]);
+		const twelve = `${"sudo ".repeat(12)}rm -rf /tmp/x`;
+		const thirteen = `${"sudo ".repeat(13)}rm -rf /tmp/x`;
+
+		await expect(fake.invoke("tool_call", bashCall(twelve), context)).resolves.toMatchObject({ block: true });
+		await expect(fake.invoke("tool_call", bashCall(thirteen), context)).resolves.toBeUndefined();
+	});
+
+	it("uses Command text, not the Matching View, as yellow retry identity", async () => {
+		const { fake, context } = await startSession([
+			{ name: "删除", pattern: "^rm -rf", type: "review", message: "复审删除" },
+		]);
+
+		await expect(fake.invoke("tool_call", bashCall("  sudo rm -rf /tmp/x  "), context)).resolves.toMatchObject({
+			block: true,
+		});
+		await fake.invoke("turn_end", turnEndEvent, context);
+		await fake.invoke("turn_start", { ...turnStartEvent, turnIndex: 1 }, context);
+		await expect(fake.invoke("tool_call", bashCall("sudo rm -rf /tmp/x"), context)).resolves.toBeUndefined();
+		await expect(fake.invoke("tool_call", bashCall("env rm -rf /tmp/x", "call-2"), context)).resolves.toMatchObject({
 			block: true,
 		});
 	});

@@ -1,4 +1,5 @@
 import type { CompiledRedRule, CompiledYellowRule, PolicySnapshot } from "./config.js";
+import { matchingView } from "./matching-view.js";
 
 export interface CommandDecisionGreen {
 	readonly color: "green";
@@ -25,102 +26,8 @@ function matchingRules<T extends CompiledRedRule | CompiledYellowRule>(
 	command: string,
 	rules: readonly T[],
 ): readonly T[] {
-	const joinedCommand = removeBashLineContinuations(command);
-	return rules.filter(
-		(rule) => rule.regexp.test(command) || (joinedCommand !== command && rule.regexp.test(joinedCommand)),
-	);
-}
-
-function removeBashLineContinuations(command: string): string {
-	type Quote = "single" | "double";
-	interface LexicalFrame {
-		quote: Quote | undefined;
-		readonly terminator: ")" | "`" | undefined;
-		parenthesisDepth: number;
-	}
-
-	const frames: LexicalFrame[] = [{ quote: undefined, terminator: undefined, parenthesisDepth: 0 }];
-	let joined = "";
-	for (let index = 0; index < command.length; index += 1) {
-		const character = command[index];
-		const frame = frames.at(-1);
-		if (frame === undefined) {
-			throw new Error("bash-permissions 内部错误：Bash 词法栈为空。");
-		}
-
-		if (character === "\\" && (frame.quote !== "single" || frame.terminator === "`")) {
-			const next = command[index + 1];
-			if (next === "\n") {
-				index += 1;
-				continue;
-			}
-			if (next === "\r" && command[index + 2] === "\n") {
-				index += 2;
-				continue;
-			}
-			if (next !== undefined) {
-				joined += character + next;
-				index += 1;
-				continue;
-			}
-		}
-
-		if (frame.quote === "single") {
-			if (character === "'") {
-				frame.quote = undefined;
-			}
-			joined += character;
-			continue;
-		}
-
-		if (character === '"') {
-			frame.quote = frame.quote === "double" ? undefined : "double";
-			joined += character;
-			continue;
-		}
-		if (character === "'" && frame.quote === undefined) {
-			frame.quote = "single";
-			joined += character;
-			continue;
-		}
-
-		const next = command[index + 1];
-		if (character === "$" && next === "(") {
-			joined += "$(";
-			frames.push({ quote: undefined, terminator: ")", parenthesisDepth: 0 });
-			index += 1;
-			continue;
-		}
-		if (frame.quote === undefined && (character === "<" || character === ">") && next === "(") {
-			joined += `${character}(`;
-			frames.push({ quote: undefined, terminator: ")", parenthesisDepth: 0 });
-			index += 1;
-			continue;
-		}
-		if (character === "`") {
-			joined += character;
-			if (frame.quote === undefined && frame.terminator === "`") {
-				frames.pop();
-			} else {
-				frames.push({ quote: undefined, terminator: "`", parenthesisDepth: 0 });
-			}
-			continue;
-		}
-
-		if (frame.quote === undefined && frame.terminator === ")") {
-			if (character === "(") {
-				frame.parenthesisDepth += 1;
-			} else if (character === ")") {
-				if (frame.parenthesisDepth === 0) {
-					frames.pop();
-				} else {
-					frame.parenthesisDepth -= 1;
-				}
-			}
-		}
-		joined += character;
-	}
-	return joined;
+	const view = matchingView(command);
+	return rules.filter((rule) => rule.regexp.test(view));
 }
 
 export class YellowReviewState {

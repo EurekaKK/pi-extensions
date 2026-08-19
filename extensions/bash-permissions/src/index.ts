@@ -67,6 +67,7 @@ export function registerBashPermissions(
 				snapshot: result.snapshot,
 				reviews: new YellowReviewState(),
 			});
+			ctx.ui.setStatus(STATUS_KEY, undefined);
 
 			if (result.createdFiles.length > 0 && ctx.hasUI) {
 				ctx.ui.notify(`bash-permissions 已创建用户配置：\n${result.createdFiles.join("\n")}`, "info");
@@ -82,7 +83,6 @@ export function registerBashPermissions(
 			if (ctx.hasUI) {
 				ctx.ui.notify(message, "error");
 			}
-			throw new Error(message);
 		}
 	});
 

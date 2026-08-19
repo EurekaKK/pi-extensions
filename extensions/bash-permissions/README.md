@@ -66,7 +66,7 @@ extension 在每次 `session_start` 时通过 Pi 的 `getAgentDir()` 定位配�
 
 路径会先转义为正则字面量，再替换所有占位符。其他双花括号占位符会使当前 session 禁用 extension。
 
-配置限制为每个文件 256 KiB、每个文件 256 条规则、每条正则 4096 个 JavaScript 字符。任一文件的 JSON、schema、版本、占位符或正则无效时，两个文件都不会形成策略；状态栏会持续显示 `bash-permissions: disabled`，且该 session 的 bash 调用不受本 extension 保护。正常运行时不占用状态栏；TUI 欢迎页的 `[Extensions]` 区域会显示一次 `bash-permissions`。
+配置限制为每个文件 256 KiB、每个文件 256 条规则、每条正则 4096 个 JavaScript 字符。任一文件的 JSON、schema、版本、占位符或正则无效时，两个文件都不会形成策略；`session_start` 不会抛错。有 UI 时会通知一次失败原因，状态栏持续显示 `bash-permissions: disabled`，该 session 的 bash 调用不受本 extension 保护。正常运行时不占用状态栏；TUI 欢迎页的 `[Extensions]` 区域会显示一次 `bash-permissions`。
 
 ## 使用示例
 
@@ -74,9 +74,9 @@ extension 在每次 `session_start` 时通过 Pi 的 `getAgentDir()` 定位配�
 - 黄色：第一次命中不会执行；只有紧接着的下一次 LLM 响应原样重试，才放行一次。
 - 红色：每次命中都拒绝执行，黄色复审资格不能覆盖红色结果。
 
-命令同一性只把 CRLF 转为 LF，并删除整条命令首尾空白；内部空格、换行、引号、参数或 shell 结构有任何变化，都视为新命令。
+判定颜色时只匹配 Matching View，不匹配原始 Command。Matching View 会先拼接 Bash 反斜杠续行（含 CRLF；普通单引号内除外，旧式反引号命令替换遵循 Bash 的预处理语义），再只从整段文本开头剥掉最多 12 层包装：`!`、`command`、`time`、`nohup`、`exec`、`env`、`sudo`、`doas` 以及 `NAME=value`。包装名本身可以带 `/bin`、`/usr/bin`、`/usr/sbin`、`/sbin` 前缀；剥掉包装后，剩余命令保留自己的路径（`sudo /bin/rm` 的视图是 `/bin/rm`）。不会在 `;`、`|` 等分隔符之后继续剥皮。该视图从不执行，也不改写即将交给 bash 的 Command。
 
-规则会先匹配完整原始文本；对 Bash 反斜杠换行，还会补充匹配删除续行符后的等价视图（含 CRLF；普通单引号内除外，旧式反引号命令替换遵循 Bash 的预处理语义）。该视图不会替换实际执行的命令，也不改变黄色复审的命令同一性。
+黄色复审的同一性仍是原始 Command：只把 CRLF 转为 LF 并去掉首尾空白。包装层不同，或内部空格、换行、引号、参数、shell 结构有任何变化，都视为新命令。
 
 ## 注册资源
 
@@ -93,7 +93,9 @@ extension 注册以下事件钩子：
 
 - 采用黑名单；绿色只表示未命中当前规则，不代表经过安全证明。
 - 只检查命令文本，不解析 shell AST，也不解析变量、命令替换或程序运行后的真实路径。
-- 默认正则覆盖常见命令分隔符、分组、变量赋值和 `!`、`command`、`exec`、`time`、`nohup`、`env`、`sudo`、`doas` 等包装形式。为限制正则回溯，单条命令最多识别 12 层前缀包装，单个 wrapper 内的 option/assignment 也设有 8–16 项上限；引号中的命令样文本、数组、算术表达式、超过上限的包装或复杂动态拼接仍可能误判或漏判。
+- Matching View 只从整段开头剥包装，不是 shell 解释器。引号中的命令样文本、`bash -c` 载荷、以及 `;`、`|` 之后的命令仍留在视图里，因此 `echo 'rm -rf'` 仍可能命中 `rm -rf` 规则。超过 12 层的包装、无法识别的 wrapper 选项、`if`/`while`/`coproc` 等结构都不会被剥掉。
+- 规则看到的是剥皮后的视图。针对 `sudo`/`doas` 等包装层本身的用户规则，在包装被剥掉后可能不再命中；当前默认模板仍带包装前缀，下一轮才会改 Starter Policy。
+- 默认正则仍覆盖常见命令分隔符、分组和部分包装形式。为限制正则回溯，默认模板自身也有 12 层前缀和 8–16 项 option/assignment 上限；数组、算术表达式或复杂动态拼接仍可能误判或漏判。
 - 不处理用户主动输入的 `!`/`!!`、RPC 客户端直接执行 bash，或其他 extension 调用的进程 API。
 - 默认规则面向 macOS 和 Linux 的 Bash 命令；Windows 可以安全加载，但不完整覆盖 PowerShell 或 `cmd.exe`。
 - Node.js 原生正则没有执行超时。用户应避免嵌套或重叠量词等可能造成灾难性回溯的表达式。
@@ -113,7 +115,7 @@ extension 读取 package 内的默认模板和两个用户配置文件。首次�
 
 ## 模式支持
 
-TUI、RPC、JSON 和 print 模式都应用相同的命令判定策略。TUI 欢迎页会在 `[Extensions]` 中显示一次 `bash-permissions`，不显示正常运行的常驻 footer；有 UI 时会通知首次创建的配置路径和初始化错误，并仅在初始化失败时常驻显示 `disabled`。JSON/print 不等待交互，初始化错误写入错误流，正常启动不输出状态噪声。
+TUI、RPC、JSON 和 print 模式都应用相同的命令判定策略。TUI 欢迎页会在 `[Extensions]` 中显示一次 `bash-permissions`，不显示正常运行的常驻 footer；有 UI 时会通知首次创建的配置路径和初始化错误，并仅在初始化失败时常驻显示 `disabled`。JSON/print 不等待交互，初始化失败时不抛错、也不拦截 bash，正常启动不输出状态噪声。
 
 ## 开发
 

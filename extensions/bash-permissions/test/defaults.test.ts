@@ -625,14 +625,14 @@ describe("default policy behavior", () => {
 		expect(decideCommand(`echo "$(rm -rf \\\n/)"`, { redRules, yellowRules }, nestedReviews).color).toBe("red");
 	});
 
-	it("bounds recognized command-prefix wrappers to keep matching predictable", () => {
+	it("still matches leftover assignment prefixes after the harness peels 12 wrappers", () => {
 		const twelveAssignments = `${Array.from({ length: 12 }, (_, index) => `X${index}=1`).join(" ")} rm -rf /`;
 		const thirteenAssignments = `${Array.from({ length: 13 }, (_, index) => `X${index}=1`).join(" ")} rm -rf /`;
 		const reviews = new YellowReviewState();
 		reviews.startResponse();
 
 		expect(decideCommand(twelveAssignments, { redRules, yellowRules }, reviews).color).toBe("red");
-		expect(decideCommand(thirteenAssignments, { redRules, yellowRules }, reviews).color).not.toBe("red");
+		expect(decideCommand(thirteenAssignments, { redRules, yellowRules }, reviews).color).toBe("red");
 	});
 
 	it("expands cwd separately for each session snapshot", () => {
