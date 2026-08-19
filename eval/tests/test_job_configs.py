@@ -38,11 +38,15 @@ def mount_targets(config: JobConfig) -> list[str]:
     return [str(mount["target"]) for mount in config.environment.mounts]
 
 
-def assert_agent(config: JobConfig, extensions: list[str]) -> None:
+def assert_agent(
+    config: JobConfig,
+    extensions: list[str],
+    model_name: str = "deepseek/deepseek-v4-flash",
+) -> None:
     assert len(config.agents) == 1
     agent = config.agents[0]
     assert agent.import_path == AGENT_IMPORT
-    assert agent.model_name == "deepseek/deepseek-v4-flash"
+    assert agent.model_name == model_name
     assert agent.kwargs["thinking"] == "high"
     assert agent.kwargs["extensions"] == extensions
     assert "version" not in agent.kwargs
@@ -63,7 +67,8 @@ def test_runtime_smoke_mounts_model_key_and_runtime_only() -> None:
     config = load_config("runtime-smoke.yaml")
 
     assert config.install_only is False
-    assert_agent(config, [])
+    assert_agent(config, [], model_name="opencode-go/mimo-v2.5")
+    assert config.agents[0].extra_allowed_hosts == ["opencode.ai"]
     assert mount_targets(config) == [REMOTE_MODEL_KEY_FILE, REMOTE_RUNTIME_DIR]
     assert REMOTE_TAVILY_KEY_FILE not in mount_targets(config)
     assert REMOTE_EXTENSION_ROOT not in mount_targets(config)
@@ -106,3 +111,27 @@ def test_runtime_smoke_tavily_mounts_second_key() -> None:
     assert REMOTE_EXTENSION_ROOT in targets
     assert (REPO_EXTENSIONS / TAVILY_EXTENSION / "package.json").is_file()
     assert (REPO_EXTENSIONS / TAVILY_EXTENSION / "index.ts").is_file()
+
+
+FIVE_EXTENSIONS = [
+    "todo",
+    "goal",
+    "sub-agent",
+    "tavily-web-search",
+    "context-management",
+]
+
+
+def test_runtime_smoke_five_ext_mounts_tavily_and_named_packages() -> None:
+    config = load_config("runtime-smoke-five-ext.yaml")
+
+    assert_agent(config, FIVE_EXTENSIONS, model_name="opencode-go/mimo-v2.5")
+    assert config.agents[0].extra_allowed_hosts == ["opencode.ai", "api.tavily.com"]
+    targets = mount_targets(config)
+    assert REMOTE_MODEL_KEY_FILE in targets
+    assert REMOTE_TAVILY_KEY_FILE in targets
+    assert REMOTE_RUNTIME_DIR in targets
+    assert REMOTE_EXTENSION_ROOT in targets
+    for name in FIVE_EXTENSIONS:
+        assert (REPO_EXTENSIONS / name / "package.json").is_file()
+        assert (REPO_EXTENSIONS / name / "index.ts").is_file()

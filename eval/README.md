@@ -29,7 +29,7 @@ agents:
 
 | 夹具 | 值 |
 | --- | --- |
-| Pi | `@earendil-works/pi-coding-agent` `0.84.1` |
+| Pi | `@earendil-works/pi-coding-agent` `0.84.2` |
 | Node | `22.23.2` |
 | nvm | `v0.40.2` |
 | Harbor | `0.20.0` |

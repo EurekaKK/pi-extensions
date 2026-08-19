@@ -93,7 +93,7 @@ if [[ "${install_only}" != true ]]; then
   require_runtime_job_mounts "${config_path}" "${need_extensions}" "${need_tavily}"
 else
   unset PI_EVAL_MODEL_KEY_FILE PI_EVAL_TAVILY_KEY_FILE
-  unset DEEPSEEK_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY TAVILY_API_KEY
+  unset DEEPSEEK_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY OPENCODE_API_KEY TAVILY_API_KEY
   if ((${#extension_names[@]} > 0)); then
     require_install_job_mounts "${config_path}"
   fi

@@ -91,7 +91,7 @@ export_model_key_file() {
   local secret_file="${eval_root}/.secrets/model_api_key"
   require_secret_file "${secret_file}" "Model API key" || return $?
   export PI_EVAL_MODEL_KEY_FILE="${secret_file}"
-  unset DEEPSEEK_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY
+  unset DEEPSEEK_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY OPENCODE_API_KEY
 }
 
 export_tavily_key_file() {

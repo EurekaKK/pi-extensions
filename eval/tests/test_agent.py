@@ -280,6 +280,26 @@ def test_run_follows_provider_model_and_thinking(tmp_path: Path) -> None:
     assert "OPENAI_API_KEY" not in env
 
 
+def test_opencode_go_exports_opencode_api_key(tmp_path: Path) -> None:
+    environment = RecordingEnvironment()
+    agent = PiTuiAgent(
+        logs_dir=tmp_path,
+        model_name="opencode-go/mimo-v2.5",
+        thinking="high",
+    )
+
+    asyncio.run(agent.run(INSTRUCTION, environment, AgentContext()))
+
+    command = str(environment.calls[0]["command"])
+    env = environment.calls[0]["env"]
+    assert isinstance(env, dict)
+    assert env["PI_EVAL_PROVIDER"] == "opencode-go"
+    assert env["PI_EVAL_MODEL"] == "mimo-v2.5"
+    assert 'export OPENCODE_API_KEY="$(<"$PI_EVAL_MODEL_KEY_FILE")"' in command
+    assert "OPENCODE_API_KEY" not in env
+    assert "DEEPSEEK_API_KEY" not in command
+
+
 def test_optional_system_prompt_is_base64_encoded(tmp_path: Path) -> None:
     prompt = "Prefer small, reversible edits."
     environment = RecordingEnvironment()

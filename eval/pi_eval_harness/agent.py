@@ -215,7 +215,7 @@ class PiTuiAgent(BaseInstalledAgent):
         self,
         instruction: str,
         environment: BaseEnvironment,
-        _context: AgentContext,
+        context: AgentContext,
     ) -> None:
         submitted = instruction.strip()
         if not submitted:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 PI_PACKAGE = "@earendil-works/pi-coding-agent"
-PI_VERSION = "0.84.1"
+PI_VERSION = "0.84.2"
 NODE_VERSION = "22.23.2"
 NVM_VERSION = "v0.40.2"
 
@@ -50,6 +50,8 @@ PROVIDER_KEY_ENV = {
     "kimi": "KIMI_API_KEY",
     "minimax": "MINIMAX_API_KEY",
     "zai": "ZAI_API_KEY",
+    "opencode": "OPENCODE_API_KEY",
+    "opencode-go": "OPENCODE_API_KEY",
 }
 
 AGENT_IMPORT = "pi_eval_harness.agent:PiTuiAgent"

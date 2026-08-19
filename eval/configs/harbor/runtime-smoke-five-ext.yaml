@@ -1,4 +1,4 @@
-job_name: runtime-smoke-pi-tui
+job_name: runtime-smoke-pi-tui-five-ext
 jobs_dir: runs/runtime-smoke
 n_attempts: 1
 n_concurrent_trials: 1
@@ -7,9 +7,15 @@ agents:
     model_name: opencode-go/mimo-v2.5
     extra_allowed_hosts:
       - opencode.ai
+      - api.tavily.com
     kwargs:
       thinking: high
-      extensions: []
+      extensions:
+        - todo
+        - goal
+        - sub-agent
+        - tavily-web-search
+        - context-management
 environment:
   mounts:
     - type: bind
@@ -19,8 +25,20 @@ environment:
       bind:
         create_host_path: false
     - type: bind
+      source: "${PI_EVAL_TAVILY_KEY_FILE}"
+      target: /run/secrets/pi-eval-tavily-api-key
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
       source: "${PI_EVAL_RUNTIME_DIR}"
       target: /opt/pi-eval/runtime
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: "${PI_EVAL_EXTENSIONS_DIR}"
+      target: /opt/pi-extensions
       read_only: true
       bind:
         create_host_path: false
