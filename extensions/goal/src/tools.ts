@@ -3,7 +3,7 @@ import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-age
 import { Type } from "typebox";
 import type { GoalConfigV1 } from "./config.js";
 import { GoalError, type GoalRef, type GoalView } from "./domain.js";
-import { GOAL_POLICY_GUIDELINE } from "./prompts.js";
+import { goalPolicyGuideline } from "./prompts.js";
 import type { GoalService } from "./service.js";
 
 export type GoalToolAuthority =
@@ -53,6 +53,7 @@ function resultFor(goal: GoalView | undefined) {
 }
 
 export function registerGoalTools(pi: { registerTool(tool: unknown): void }, runtime: GoalToolRuntime): void {
+	const promptGuidelines = [goalPolicyGuideline(runtime.config.blockedAfterConsecutiveRounds)];
 	pi.registerTool(
 		defineTool({
 			name: "get_goal",
@@ -60,7 +61,7 @@ export function registerGoalTools(pi: { registerTool(tool: unknown): void }, run
 			description:
 				"Read the current same-session goal, including its exact id/revision, objective, phase, completed continuation rounds, round limit, blocker reason when present, and whether another continuation is armed. Call this before updating a goal.",
 			parameters: Type.Object({}, { additionalProperties: false }),
-			promptGuidelines: [GOAL_POLICY_GUIDELINE],
+			promptGuidelines,
 			execute(_toolCallId, _parameters, signal, _onUpdate, context) {
 				if (signal?.aborted) throw new Error("Operation aborted");
 				return Promise.resolve(resultFor(runtime.service.get(context)));
@@ -81,7 +82,7 @@ export function registerGoalTools(pi: { registerTool(tool: unknown): void }, run
 				},
 				{ additionalProperties: false },
 			),
-			promptGuidelines: [GOAL_POLICY_GUIDELINE],
+			promptGuidelines,
 			execute(_toolCallId, parameters, signal, _onUpdate, context) {
 				if (signal?.aborted) throw new Error("Operation aborted");
 				runtime.authority(context);
@@ -108,7 +109,7 @@ export function registerGoalTools(pi: { registerTool(tool: unknown): void }, run
 				},
 				{ additionalProperties: false },
 			),
-			promptGuidelines: [GOAL_POLICY_GUIDELINE],
+			promptGuidelines,
 			execute(_toolCallId, parameters, signal, _onUpdate, context) {
 				if (signal?.aborted) throw new Error("Operation aborted");
 				const authority = runtime.authority(context);

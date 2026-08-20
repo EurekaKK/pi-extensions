@@ -8,6 +8,7 @@ interface CapturedTool {
 	readonly name: string;
 	readonly label: string;
 	readonly description: string;
+	readonly promptGuidelines?: readonly string[];
 	readonly parameters: unknown;
 	execute(
 		toolCallId: string,
@@ -52,6 +53,19 @@ describe("sub-agent v2 parent tools", () => {
 			"interrupt_agent",
 			"list_agents",
 		]);
+	});
+
+	it("adds the dsh background guideline only on continuable delegation tools", () => {
+		const tools = captureTools({} as SubagentManager);
+		const subagent = toolAt(tools, 0);
+		const fork = toolAt(tools, 1);
+		expect(subagent.promptGuidelines).toEqual([
+			"Use subagent in the background by default. Start independent delegations together in one assistant message and continue useful work while they run. " +
+				"Set `run_in_background: false` only when your next action depends on that subagent's result. " +
+				"When a background run settles, the runtime sends you a notice containing its outcome and any final assistant message.",
+		]);
+		expect(fork.promptGuidelines).toBeUndefined();
+		expect(toolAt(tools, 2).promptGuidelines).toBeUndefined();
 	});
 
 	it("defaults continuable tools to background and supports foreground override", async () => {

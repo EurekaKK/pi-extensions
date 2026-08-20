@@ -1,0 +1,52 @@
+job_name: dev12-pi-tui-four-ext
+jobs_dir: runs/dev12
+n_attempts: 1
+n_concurrent_trials: 2
+agents:
+  - import_path: pi_eval_harness.agent:PiTuiAgent
+    model_name: opencode-go/deepseek-v4-flash
+    extra_allowed_hosts:
+      - opencode.ai
+    kwargs:
+      thinking: max
+      extensions:
+        - todo
+        - goal
+        - sub-agent
+        - context-management
+environment:
+  mounts:
+    - type: bind
+      source: "${PI_EVAL_MODEL_KEY_FILE}"
+      target: /run/secrets/pi-eval-model-api-key
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: "${PI_EVAL_RUNTIME_DIR}"
+      target: /opt/pi-eval/runtime
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: "${PI_EVAL_EXTENSIONS_DIR}"
+      target: /opt/pi-extensions
+      read_only: true
+      bind:
+        create_host_path: false
+datasets:
+  - name: terminal-bench/terminal-bench-2-1
+    ref: sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a
+    task_names:
+      - terminal-bench/crack-7z-hash
+      - terminal-bench/fix-git
+      - terminal-bench/prove-plus-comm
+      - terminal-bench/raman-fitting
+      - terminal-bench/build-cython-ext
+      - terminal-bench/extract-elf
+      - terminal-bench/schemelike-metacircular-eval
+      - terminal-bench/tune-mjcf
+      - terminal-bench/cancel-async-tasks
+      - terminal-bench/mcmc-sampling-stan
+      - terminal-bench/regex-chess
+      - terminal-bench/sparql-university

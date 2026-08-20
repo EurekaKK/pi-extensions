@@ -23,7 +23,7 @@ agents:
 - `model_name`：`provider/id`。provider 决定容器内导出哪一个 Pi 文档中的 key 环境变量。
 - `thinking`：`off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。
 - `extensions`：本仓库 `extensions/` 下的 kebab-case 目录名，顺序即 `pi install` 与 `--extension` 顺序。空列表或不写该字段 = 原生 Pi。
-- `append_system_prompt`：可选；默认不加。
+- `append_system_prompt`：可选；默认不加。four-ext job 不再额外 steer；goal / sub-agent 的调用政策由 extension 自带的 `promptGuidelines` 进入 Pi system prompt。native 不加。
 
 以下内容是夹具，不是 job 旋钮：
 
@@ -37,6 +37,10 @@ agents:
 | 启动开关 | `--offline --approve --no-extensions --no-skills --no-prompt-templates --no-themes` |
 | 环境 | `PI_OFFLINE=1` `PI_TELEMETRY=0` 独立 `PI_CODING_AGENT_DIR` |
 | 指令投递 | 真实 TUI + bracketed paste；不用 `--print` |
+| TUI 收工 | 无 active goal 时，第一条 assistant `stop` 即 `/quit`。最新 `goal:change` 仍为 `active` 时，等到该 `stop` 之后出现 `goal:round` 再继续等下一轮；15s 内没有续跑则收工。`complete` / `blocked` / `paused` / 无 goal 立即收工。续跑仍在走但未标 complete 时，等 Harbor agent timeout |
+| 流中断 | driver 在同一 session 里 continue，不把 `Stream ended without finish_reason` 记成 exit 74；401/402 仍 fail-closed；搞不定就等 Harbor agent timeout |
+| 任务镜像 | runtime job 启动前按 YAML 题单 `docker pull` 预拉 Harbor 将启动的 image |
+| 容器清理 | job 结束后拆掉本 job 以及已结束 sibling job 的 Harbor trial 容器和 compose 网络；不删镜像 |
 | 密钥 | 只读 bind-mount 到 `/run/secrets/…`；Harbor `agent.env` 不得带 API key |
 
 不加 `--no-context-files`，任务仓里的 `AGENTS.md` / `CLAUDE.md` 仍按 Pi 默认加载。adapter **不写、不覆盖** 任何 extension 的 `config.json`，也不检查 sidecar / guardian / worker。sub-agent v2 首次加载会自建 inherit 默认配置。
@@ -65,7 +69,7 @@ uv sync --group dev
 
 ## 示例作业
 
-数据集和题单属于 job，不属于 adapter。示例引用 Terminal-Bench 2.1 的一题 smoke，方便第一次接入；正式题单请自己写 YAML。
+数据集和题单属于 job，不属于 adapter。示例引用 Terminal-Bench 2.1 的一题 smoke，方便第一次接入。`dev16` 是从该 digest 的 59 题 development split 里去掉棋盘图 / 代码截图 / 视频抽帧 / 参考 PPM 四道视觉输入题后，按类别 Hamilton 配额抽出的 16 道非视觉题。`dev12` 从同一非视觉 development 池按难度抽 4 易 / 4 中 / 4 难；池里官方 easy 只有两道，另外两道 easy 用最短 expert/junior 工时的 medium 补齐。`med16` 从同一非视觉 development 池取 author-labeled medium，丢掉 `agent.timeout_sec >= 1800` 的题后再按 hash 抽 16 道。`med16` native 与 four-ext 共用 `opencode-go/deepseek-v4-flash`、thinking `max`；差别只在四个 extension。抽样细节见 `configs/tb21-dev12.json` 和 `configs/tb21-med16.json`。Harbor 每个 trial 默认把 Pi session jsonl、TUI typescript 和 trial.log 留在 `eval/runs/`，容器删掉后轨迹仍在。
 
 ```bash
 ./scripts/run-install-only.sh
@@ -73,14 +77,26 @@ uv sync --group dev
 ./scripts/run-install-only-extensions.sh
 ./scripts/run-runtime-smoke-extensions.sh
 ./scripts/run-runtime-smoke-tavily.sh
+./scripts/run-runtime-smoke-four-ext.sh
+./scripts/run-dev12.sh
+./scripts/run-dev12-four-ext.sh
+./scripts/run-dev16.sh
+./scripts/run-dev16-four-ext.sh
+./scripts/run-dev16-retry-fail6.sh
+./scripts/run-med16.sh
+./scripts/run-med16-four-ext.sh
 ```
 
-脚本会校验扩展源和密钥、导出 mount 变量，并调用 `uv run harbor run --config … --job-name pi-tui-<timestamp> --yes`。自定义 job：
+脚本会校验扩展源和密钥、预拉题单 Docker 镜像、导出 mount 变量，并调用 `uv run harbor run --config … --job-name pi-tui-<timestamp> --yes`。自定义 job：
 
 ```bash
 ./scripts/run-harbor-job.sh --config path/to/job.yaml
 ./scripts/run-harbor-job.sh --config path/to/job.yaml --install-only
+./scripts/prefetch-task-images.sh --config configs/harbor/dev16.yaml
+./scripts/cleanup-job-docker.sh --config configs/harbor/dev16.yaml --job-name pi-tui-native-dev16-mimo-20260819
 ```
+
+已缓存的镜像会跳过 pull。跳过预拉：`PI_EVAL_SKIP_IMAGE_PREFETCH=1`。跳过收尾拆容器：`PI_EVAL_SKIP_DOCKER_CLEANUP=1`。
 
 挂载约定：
 
@@ -113,7 +129,7 @@ uv sync --group dev
 
 - `eval/.secrets/`：本机密钥，不进 git。删除该目录即可清理。
 - `eval/runs/`：Harbor job 产物，不进 git。删除即可清理。
-- 容器内 Pi session 写到 trial 日志目录；不向 `extensions/` 源码目录写运行时状态。
+- 容器内 Pi session 写到 trial 日志目录（`agent/pi/sessions/*.jsonl`、`agent/pi-tui.typescript`、`trial.log`）；不向 `extensions/` 源码目录写运行时状态。
 - adapter 不写 extension `config.json`；各包首次加载可在容器 agent dir 自建默认配置。
 
 ## 模式支持

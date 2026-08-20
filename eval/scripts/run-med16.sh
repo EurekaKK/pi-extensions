@@ -3,5 +3,5 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec "${script_dir}/run-harbor-job.sh" \
-  --config configs/harbor/runtime-smoke-five-ext.yaml \
+  --config configs/harbor/med16.yaml \
   "$@"

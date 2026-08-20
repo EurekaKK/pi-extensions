@@ -13,13 +13,14 @@ source "${script_dir}/lib/sources.sh"
 source "${script_dir}/lib/secrets.sh"
 
 usage() {
-  echo "Usage: $0 --config <yaml> [--install-only] [--job-name <name>]" >&2
+  echo "Usage: $0 --config <yaml> [--install-only] [--job-name <name>] [-- harbor-args...]" >&2
   echo "Launch a Harbor job for the Pi TUI adapter after checking sources and secrets." >&2
 }
 
 config_path=""
 install_only=false
 job_name=""
+harbor_args=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -38,6 +39,11 @@ while [[ $# -gt 0 ]]; do
     --help|-h)
       usage
       exit 0
+      ;;
+    --)
+      shift
+      harbor_args+=("$@")
+      break
       ;;
     *)
       usage
@@ -64,6 +70,7 @@ if [[ ! -f "${config_path}" ]]; then
 fi
 
 cd "${eval_root}"
+export PYTHONPATH="${eval_root}${PYTHONPATH:+:${PYTHONPATH}}"
 export_runtime_dir "${eval_root}"
 export_extensions_dir "${repo_root}"
 
@@ -91,6 +98,9 @@ if [[ "${install_only}" != true ]]; then
     unset PI_EVAL_TAVILY_KEY_FILE TAVILY_API_KEY
   fi
   require_runtime_job_mounts "${config_path}" "${need_extensions}" "${need_tavily}"
+  if [[ "${PI_EVAL_SKIP_IMAGE_PREFETCH:-}" != "1" ]]; then
+    "${script_dir}/prefetch-task-images.sh" --config "${config_path}"
+  fi
 else
   unset PI_EVAL_MODEL_KEY_FILE PI_EVAL_TAVILY_KEY_FILE
   unset DEEPSEEK_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY OPENCODE_API_KEY TAVILY_API_KEY
@@ -103,9 +113,21 @@ if [[ -z "${job_name}" ]]; then
   job_name="pi-tui-$(date +%Y%m%d-%H%M%S)"
 fi
 
-export PYTHONPATH="${eval_root}${PYTHONPATH:+:${PYTHONPATH}}"
+cleanup_job_docker() {
+  if [[ "${PI_EVAL_SKIP_DOCKER_CLEANUP:-}" == "1" ]]; then
+    return 0
+  fi
+  "${script_dir}/cleanup-job-docker.sh" \
+    --config "${config_path}" \
+    --job-name "${job_name}" \
+    --eval-root "${eval_root}" \
+    || echo "Harbor trial container cleanup failed" >&2
+}
+
+trap cleanup_job_docker EXIT
 
 uv run harbor run \
   --config "${config_path}" \
   --job-name "${job_name}" \
-  --yes
+  --yes \
+  ${harbor_args[@]+"${harbor_args[@]}"}

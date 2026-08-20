@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
@@ -42,12 +43,13 @@ def assert_agent(
     config: JobConfig,
     extensions: list[str],
     model_name: str = "deepseek/deepseek-v4-flash",
+    thinking: str = "high",
 ) -> None:
     assert len(config.agents) == 1
     agent = config.agents[0]
     assert agent.import_path == AGENT_IMPORT
     assert agent.model_name == model_name
-    assert agent.kwargs["thinking"] == "high"
+    assert agent.kwargs["thinking"] == thinking
     assert agent.kwargs["extensions"] == extensions
     assert "version" not in agent.kwargs
     assert agent.env == {}
@@ -113,25 +115,250 @@ def test_runtime_smoke_tavily_mounts_second_key() -> None:
     assert (REPO_EXTENSIONS / TAVILY_EXTENSION / "index.ts").is_file()
 
 
-FIVE_EXTENSIONS = [
+FOUR_EXTENSIONS = [
     "todo",
     "goal",
     "sub-agent",
-    "tavily-web-search",
     "context-management",
 ]
 
 
-def test_runtime_smoke_five_ext_mounts_tavily_and_named_packages() -> None:
-    config = load_config("runtime-smoke-five-ext.yaml")
+def test_runtime_smoke_four_ext_mounts_named_packages_without_tavily() -> None:
+    config = load_config("runtime-smoke-four-ext.yaml")
 
-    assert_agent(config, FIVE_EXTENSIONS, model_name="opencode-go/mimo-v2.5")
-    assert config.agents[0].extra_allowed_hosts == ["opencode.ai", "api.tavily.com"]
+    assert_agent(config, FOUR_EXTENSIONS, model_name="opencode-go/mimo-v2.5")
+    assert config.agents[0].extra_allowed_hosts == ["opencode.ai"]
     targets = mount_targets(config)
     assert REMOTE_MODEL_KEY_FILE in targets
-    assert REMOTE_TAVILY_KEY_FILE in targets
     assert REMOTE_RUNTIME_DIR in targets
     assert REMOTE_EXTENSION_ROOT in targets
-    for name in FIVE_EXTENSIONS:
+    assert REMOTE_TAVILY_KEY_FILE not in targets
+    for name in FOUR_EXTENSIONS:
         assert (REPO_EXTENSIONS / name / "package.json").is_file()
         assert (REPO_EXTENSIONS / name / "index.ts").is_file()
+
+
+VISION_TASKS = {
+    "terminal-bench/chess-best-move",
+    "terminal-bench/code-from-image",
+    "terminal-bench/extract-moves-from-video",
+    "terminal-bench/financial-document-processor",
+    "terminal-bench/path-tracing",
+}
+
+DEV16_TASKS = [
+    "terminal-bench/configure-git-webserver",
+    "terminal-bench/extract-elf",
+    "terminal-bench/feal-differential-cryptanalysis",
+    "terminal-bench/hf-model-inference",
+    "terminal-bench/install-windows-3.11",
+    "terminal-bench/kv-store-grpc",
+    "terminal-bench/llm-inference-batching-scheduler",
+    "terminal-bench/mcmc-sampling-stan",
+    "terminal-bench/merge-diff-arc-agi-task",
+    "terminal-bench/modernize-scientific-stack",
+    "terminal-bench/multi-source-data-merger",
+    "terminal-bench/password-recovery",
+    "terminal-bench/polyglot-c-py",
+    "terminal-bench/pypi-server",
+    "terminal-bench/schemelike-metacircular-eval",
+    "terminal-bench/train-fasttext",
+]
+
+
+DEV12_EASY = [
+    "terminal-bench/crack-7z-hash",
+    "terminal-bench/fix-git",
+    "terminal-bench/prove-plus-comm",
+    "terminal-bench/raman-fitting",
+]
+DEV12_MEDIUM = [
+    "terminal-bench/build-cython-ext",
+    "terminal-bench/extract-elf",
+    "terminal-bench/schemelike-metacircular-eval",
+    "terminal-bench/tune-mjcf",
+]
+DEV12_HARD = [
+    "terminal-bench/cancel-async-tasks",
+    "terminal-bench/mcmc-sampling-stan",
+    "terminal-bench/regex-chess",
+    "terminal-bench/sparql-university",
+]
+DEV12_TASKS = DEV12_EASY + DEV12_MEDIUM + DEV12_HARD
+
+MED16_TASKS = [
+    "terminal-bench/build-cython-ext",
+    "terminal-bench/build-pmars",
+    "terminal-bench/constraints-scheduling",
+    "terminal-bench/extract-elf",
+    "terminal-bench/gcode-to-text",
+    "terminal-bench/git-multibranch",
+    "terminal-bench/hf-model-inference",
+    "terminal-bench/merge-diff-arc-agi-task",
+    "terminal-bench/multi-source-data-merger",
+    "terminal-bench/nginx-request-logging",
+    "terminal-bench/polyglot-c-py",
+    "terminal-bench/pytorch-model-cli",
+    "terminal-bench/pytorch-model-recovery",
+    "terminal-bench/qemu-alpine-ssh",
+    "terminal-bench/qemu-startup",
+    "terminal-bench/query-optimize",
+]
+MED16_DROPPED_FOR_TIMEOUT = [
+    "terminal-bench/crack-7z-hash",
+    "terminal-bench/custom-memory-heap-crash",
+    "terminal-bench/distribution-search",
+    "terminal-bench/portfolio-optimization",
+    "terminal-bench/reshard-c4-data",
+    "terminal-bench/rstan-to-pystan",
+    "terminal-bench/schemelike-metacircular-eval",
+]
+
+
+def test_dev12_is_four_easy_four_medium_four_hard() -> None:
+    native = load_config("dev12.yaml")
+    four_ext = load_config("dev12-four-ext.yaml")
+    spec = json.loads((ROOT / "configs" / "tb21-dev12.json").read_text())
+
+    assert spec["easy"] == DEV12_EASY
+    assert spec["medium"] == DEV12_MEDIUM
+    assert spec["hard"] == DEV12_HARD
+    assert spec["easy_official"] == [
+        "terminal-bench/fix-git",
+        "terminal-bench/prove-plus-comm",
+    ]
+    assert spec["easy_promoted_from_medium"] == [
+        "terminal-bench/crack-7z-hash",
+        "terminal-bench/raman-fitting",
+    ]
+    assert native.n_attempts == 1
+    assert native.n_concurrent_trials == 2
+    assert native.datasets[0].ref == DATASET_DIGEST
+    assert native.datasets[0].task_names == DEV12_TASKS
+    assert four_ext.datasets[0].task_names == DEV12_TASKS
+    assert len(DEV12_TASKS) == 12
+    assert len(set(DEV12_TASKS)) == 12
+    assert VISION_TASKS.isdisjoint(DEV12_TASKS)
+    assert_agent(native, [], model_name="opencode-go/mimo-v2.5")
+    assert_agent(
+        four_ext,
+        FOUR_EXTENSIONS,
+        model_name="opencode-go/deepseek-v4-flash",
+        thinking="max",
+    )
+    assert "append_system_prompt" not in native.agents[0].kwargs
+    assert "append_system_prompt" not in four_ext.agents[0].kwargs
+    assert native.agents[0].extra_allowed_hosts == ["opencode.ai"]
+    assert four_ext.agents[0].extra_allowed_hosts == ["opencode.ai"]
+    assert mount_targets(native) == [REMOTE_MODEL_KEY_FILE, REMOTE_RUNTIME_DIR]
+    four_targets = mount_targets(four_ext)
+    assert REMOTE_MODEL_KEY_FILE in four_targets
+    assert REMOTE_TAVILY_KEY_FILE not in four_targets
+    assert REMOTE_RUNTIME_DIR in four_targets
+    assert REMOTE_EXTENSION_ROOT in four_targets
+
+
+def test_med16_is_sixteen_medium_tasks_under_timeout() -> None:
+    native = load_config("med16.yaml")
+    four_ext = load_config("med16-four-ext.yaml")
+    spec = json.loads((ROOT / "configs" / "tb21-med16.json").read_text())
+
+    assert spec["tasks"] == MED16_TASKS
+    assert spec["dropped_for_timeout"] == MED16_DROPPED_FOR_TIMEOUT
+    assert spec["algorithm"]["salt"] == "pi-extensions/eval/tb21-med16/v1"
+    assert spec["algorithm"]["dataset_digest"] == DATASET_DIGEST
+    assert native.n_attempts == 1
+    assert native.n_concurrent_trials == 2
+    assert native.jobs_dir == Path("runs/med16")
+    assert four_ext.jobs_dir == Path("runs/med16")
+    assert native.datasets[0].ref == DATASET_DIGEST
+    assert native.datasets[0].task_names == MED16_TASKS
+    assert four_ext.datasets[0].task_names == MED16_TASKS
+    assert len(MED16_TASKS) == 16
+    assert len(set(MED16_TASKS)) == 16
+    assert VISION_TASKS.isdisjoint(MED16_TASKS)
+    assert set(MED16_TASKS).isdisjoint(MED16_DROPPED_FOR_TIMEOUT)
+    assert_agent(
+        native,
+        [],
+        model_name="opencode-go/deepseek-v4-flash",
+        thinking="max",
+    )
+    assert_agent(
+        four_ext,
+        FOUR_EXTENSIONS,
+        model_name="opencode-go/deepseek-v4-flash",
+        thinking="max",
+    )
+    assert "append_system_prompt" not in native.agents[0].kwargs
+    assert "append_system_prompt" not in four_ext.agents[0].kwargs
+    assert native.agents[0].extra_allowed_hosts == ["opencode.ai"]
+    assert four_ext.agents[0].extra_allowed_hosts == ["opencode.ai"]
+    assert mount_targets(native) == [REMOTE_MODEL_KEY_FILE, REMOTE_RUNTIME_DIR]
+    four_targets = mount_targets(four_ext)
+    assert REMOTE_MODEL_KEY_FILE in four_targets
+    assert REMOTE_TAVILY_KEY_FILE not in four_targets
+    assert REMOTE_RUNTIME_DIR in four_targets
+    assert REMOTE_EXTENSION_ROOT in four_targets
+
+
+def test_dev16_is_sixteen_nonvisual_tasks() -> None:
+    native = load_config("dev16.yaml")
+    four_ext = load_config("dev16-four-ext.yaml")
+
+    assert native.n_attempts == 1
+    assert native.n_concurrent_trials == 2
+    assert native.datasets[0].ref == DATASET_DIGEST
+    assert native.datasets[0].task_names == DEV16_TASKS
+    assert four_ext.datasets[0].task_names == DEV16_TASKS
+    assert len(DEV16_TASKS) == 16
+    assert len(set(DEV16_TASKS)) == 16
+    assert VISION_TASKS.isdisjoint(DEV16_TASKS)
+    assert_agent(native, [], model_name="opencode-go/mimo-v2.5")
+    assert_agent(
+        four_ext,
+        FOUR_EXTENSIONS,
+        model_name="opencode-go/deepseek-v4-flash",
+        thinking="max",
+    )
+    assert "append_system_prompt" not in native.agents[0].kwargs
+    assert "append_system_prompt" not in four_ext.agents[0].kwargs
+    assert native.agents[0].extra_allowed_hosts == ["opencode.ai"]
+    assert four_ext.agents[0].extra_allowed_hosts == ["opencode.ai"]
+    assert mount_targets(native) == [REMOTE_MODEL_KEY_FILE, REMOTE_RUNTIME_DIR]
+    retry = load_config("dev16-retry-fail6.yaml")
+    retry_tasks = retry.datasets[0].task_names or []
+    assert retry.datasets[0].ref == DATASET_DIGEST
+    assert retry.n_concurrent_trials == 2
+    assert len(retry_tasks) == 6
+    assert retry_tasks == [
+        "terminal-bench/feal-differential-cryptanalysis",
+        "terminal-bench/install-windows-3.11",
+        "terminal-bench/password-recovery",
+        "terminal-bench/polyglot-c-py",
+        "terminal-bench/schemelike-metacircular-eval",
+        "terminal-bench/train-fasttext",
+    ]
+    assert set(retry_tasks).issubset(DEV16_TASKS)
+    assert_agent(retry, [], model_name="opencode-go/mimo-v2.5")
+    assert mount_targets(retry) == [REMOTE_MODEL_KEY_FILE, REMOTE_RUNTIME_DIR]
+    four_targets = mount_targets(four_ext)
+    assert REMOTE_MODEL_KEY_FILE in four_targets
+    assert REMOTE_TAVILY_KEY_FILE not in four_targets
+    assert REMOTE_RUNTIME_DIR in four_targets
+    assert REMOTE_EXTENSION_ROOT in four_targets
+    probe = load_config("dev16-four-ext-probe2.yaml")
+    probe_tasks = probe.datasets[0].task_names or []
+    assert probe_tasks == [
+        "terminal-bench/extract-elf",
+        "terminal-bench/pypi-server",
+    ]
+    assert set(probe_tasks).issubset(DEV16_TASKS)
+    assert_agent(
+        probe,
+        FOUR_EXTENSIONS,
+        model_name="opencode-go/deepseek-v4-flash",
+        thinking="max",
+    )
+    assert "append_system_prompt" not in probe.agents[0].kwargs
+    assert mount_targets(probe) == four_targets
