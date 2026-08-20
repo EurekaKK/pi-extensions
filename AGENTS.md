@@ -11,9 +11,11 @@
 - 所有 extension 位于 `extensions/<name>/`；只有 `extensions/` 下的一级目录代表独立 extension。
 - `templates/extension/` 是新 extension 的脚手架来源。首次创建 extension 时若模板尚不存在，应先建立与本文件一致的模板。
 - `scripts/` 仅存放仓库级开发与发布辅助脚本，不包含 extension 运行时代码。
+- `eval/` 是独立的 Python Harbor 评测夹具（uv / Harbor peer），不是 Pi extension，不得加入 npm workspaces。
 - extension 之间必须保持独立，不得直接引用兄弟 extension 的源码或依赖其未声明的文件。
+- extension 不得引用 `eval/`。
 - 每个 extension 必须能够独立安装、运行、检查、测试和发布。
-- 子目录 `AGENTS.md` 按需创建，只补充该 extension 的特殊约束，不复制根规则。
+- 子目录 `AGENTS.md` 按需创建，只补充该目录的特殊约束，不复制根规则。
 
 ## Git 忽略准则
 
@@ -106,6 +108,7 @@ npm test       # Vitest 自动化测试
 - 测试优先覆盖可观察契约和关键不变量；权限、安全、预算、并发、取消与清理等边界发生变化时，必须增加针对性回归测试。
 - 纯文档修改不运行代码验证。
 - 修改根级共享配置或准备发布时，运行全部 workspaces 的完整检查与测试。
+- 修改 `eval/` 时在该目录用 uv 运行 `ruff check` 和 `pytest`；不要用 npm workspaces 命令代替，也不要把 Python 依赖写进根 `package-lock.json`。
 - 发布 extension 前，额外使用本机最新版 Pi 做一次无副作用的真实加载 smoke test。
 - 新 extension 或入口变更的 smoke test 必须从 package 目录加载或安装，不能用 `-e src/index.ts` 代替；应
   验证 Pi 最终只解析到 `<extension>/index.ts`，并确认启动页 `[Extensions]` 显示 extension 目录名，不是

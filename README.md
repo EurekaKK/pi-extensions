@@ -16,6 +16,7 @@ pi-extensions/
 ├── README.md
 ├── package.json
 ├── package-lock.json
+├── eval/
 ├── extensions/
 │   └── <extension-name>/
 ├── templates/
@@ -24,16 +25,18 @@ pi-extensions/
 ```
 
 - `extensions/`：独立 extension packages。
+- `eval/`：独立的 Python Harbor 评测夹具，不是 Pi extension，也不加入 npm workspaces。
 - `templates/extension/`：创建新 extension 的标准脚手架。
 - `scripts/`：仓库级开发与发布辅助脚本。
 
-仓库使用 npm workspaces 管理各个独立 extension。
+仓库使用 npm workspaces 管理各个独立 extension。评测 adapter 使用 uv，说明见 [`eval/README.md`](./eval/README.md)。
 
 ## 环境要求
 
 - 本机最新版 Pi，使用 `@earendil-works/*` package scope。
 - Node.js `>=22.19.0`。
 - npm；仓库不混用 pnpm 或 Yarn。
+- 评测夹具另需 Python `3.12` 与 [uv](https://docs.astral.sh/uv/)；Harbor 以 peer 声明在 `eval/`。
 
 ## 开发约定
 
@@ -72,6 +75,10 @@ npm test --workspaces
 | `todo` | experimental | 通过 `todo_write` 每次全量替换模型任务列表，并提供按轮次清空的计划条 | [`extensions/todo`](./extensions/todo/) |
 
 新增、重命名、弃用或删除 extension 时，必须同步维护此索引。
+
+## 评测夹具
+
+要用 Harbor 对当前工作树跑 Terminal-Bench，使用 [`eval/`](./eval/) 里的 Pi TUI adapter。它不是可 `pi install` 的 extension。不要使用 Harbor 内置的 `pi` agent。
 
 ## License
 

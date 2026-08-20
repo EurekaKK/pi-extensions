@@ -1,0 +1,34 @@
+{
+  "algorithm": {
+    "pool": "TB 2.1 development split minus four visual-input tasks",
+    "dataset_digest": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+    "salt": "pi-extensions/eval/tb21-dev12-difficulty/v1",
+    "note": "The non-visual development pool has only two author-labeled easy tasks. Two extra easy slots are filled from remaining medium tasks by shortest expert then junior time estimates. Medium and hard use sha256(salt + NUL + digest + NUL + difficulty + NUL + task_name) and take the first four in each remaining bucket."
+  },
+  "easy": [
+    "terminal-bench/crack-7z-hash",
+    "terminal-bench/fix-git",
+    "terminal-bench/prove-plus-comm",
+    "terminal-bench/raman-fitting"
+  ],
+  "easy_official": [
+    "terminal-bench/fix-git",
+    "terminal-bench/prove-plus-comm"
+  ],
+  "easy_promoted_from_medium": [
+    "terminal-bench/crack-7z-hash",
+    "terminal-bench/raman-fitting"
+  ],
+  "medium": [
+    "terminal-bench/build-cython-ext",
+    "terminal-bench/extract-elf",
+    "terminal-bench/schemelike-metacircular-eval",
+    "terminal-bench/tune-mjcf"
+  ],
+  "hard": [
+    "terminal-bench/cancel-async-tasks",
+    "terminal-bench/mcmc-sampling-stan",
+    "terminal-bench/regex-chess",
+    "terminal-bench/sparql-university"
+  ]
+}

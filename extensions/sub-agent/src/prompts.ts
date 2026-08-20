@@ -1,3 +1,11 @@
+export function subagentBackgroundGuideline(toolName: string): string {
+	return (
+		`Use ${toolName} in the background by default. Start independent delegations together in one assistant message and continue useful work while they run. ` +
+		"Set `run_in_background: false` only when your next action depends on that subagent's result. " +
+		"When a background run settles, the runtime sends you a notice containing its outcome and any final assistant message."
+	);
+}
+
 export const SUBAGENT_DESCRIPTION =
 	"Delegate a self-contained task to a subagent (a separate agent that works in its own context) " +
 	"to offload focused, independent work — research, a scoped implementation, an analysis — so it does " +

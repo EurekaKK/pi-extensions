@@ -9,6 +9,7 @@ import {
 	SEND_MESSAGE_DESCRIPTION,
 	SUBAGENT_DESCRIPTION,
 	SUBAGENT_FORK_DESCRIPTION,
+	subagentBackgroundGuideline,
 } from "./prompts.js";
 import type { SubagentListEntry, SubagentManager } from "./runtime.js";
 
@@ -34,6 +35,11 @@ function delegationDescription(tool: SubagentDelegationToolConfigV2): string {
 	return SUBAGENT_DESCRIPTION;
 }
 
+function delegationGuidelines(tool: SubagentDelegationToolConfigV2): string[] | undefined {
+	if (tool.backgroundMode !== "continuable") return undefined;
+	return [subagentBackgroundGuideline(tool.toolName)];
+}
+
 function listText(entries: readonly SubagentListEntry[]): string {
 	if (entries.length === 0) return "(no subagents)";
 	return entries
@@ -55,12 +61,14 @@ export function registerParentTools(
 ): void {
 	for (const toolConfig of config.delegationTools) {
 		const name = toolConfig.toolName;
+		const promptGuidelines = delegationGuidelines(toolConfig);
 		pi.registerTool(
 			defineTool({
 				name,
 				label: name,
 				description: delegationDescription(toolConfig),
 				parameters: DelegationParameters,
+				...(promptGuidelines === undefined ? {} : { promptGuidelines }),
 				async execute(_toolCallId, parameters, signal, _onUpdate, context) {
 					if (signal?.aborted) throw new Error("Operation aborted");
 					const manager = runtime.manager(context);

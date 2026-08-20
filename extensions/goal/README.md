@@ -42,7 +42,7 @@ pi remove ./extensions/goal
 ```
 
 - `defaultMaxGoalRounds`：创建目标时未显式指定 round cap 时使用的默认值。
-- `blockedAfterConsecutiveRounds`：Goal Round 内模型自主 `blocked` 的最小连续 round 数。
+- `blockedAfterConsecutiveRounds`：Goal Round 内模型自主 `blocked` 的最小连续 round 数。三条 goal 工具的 `promptGuidelines` 会写入这个数字，并说明困难、不确定或仍有工作可做不等于 blocked。
 
 配置修改后执行 `/reload` 生效。配置损坏时 goal 工具和命令不会注册。
 
@@ -52,7 +52,7 @@ pi remove ./extensions/goal
 - `create_goal(objective, max_goal_rounds?)`：在当前直接人类轮次创建目标。
 - `update_goal(goal_id, revision, action, ...)`：edit / pause / resume / complete / blocked。
 
-所有更新必须使用 `get_goal` 返回的精确 `goal_id` 和 `revision`。
+所有更新必须使用 `get_goal` 返回的精确 `goal_id` 和 `revision`。三条工具共用一条 `promptGuidelines`，内容随 `blockedAfterConsecutiveRounds` 生成。
 
 ## 用户命令
 

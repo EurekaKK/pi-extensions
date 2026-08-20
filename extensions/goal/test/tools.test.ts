@@ -5,6 +5,7 @@ import { type GoalToolRuntime, registerGoalTools } from "../src/tools.js";
 
 interface CapturedTool {
 	readonly name: string;
+	readonly promptGuidelines?: readonly string[];
 	execute(
 		toolCallId: string,
 		parameters: never,
@@ -36,6 +37,19 @@ describe("goal v2 model tools", () => {
 			authority: () => ({ kind: "direct-human" }),
 		} as unknown as GoalToolRuntime;
 		expect(capture(runtime).map((tool) => tool.name)).toEqual(["get_goal", "create_goal", "update_goal"]);
+	});
+
+	it("puts the configured blocked threshold on every goal tool guideline", () => {
+		const runtime = {
+			service: {},
+			config: { ...DEFAULT_CONFIG, blockedAfterConsecutiveRounds: 4 },
+			authority: () => ({ kind: "direct-human" }),
+		} as unknown as GoalToolRuntime;
+		const guidelines = capture(runtime).map((tool) => tool.promptGuidelines);
+		expect(guidelines).toHaveLength(3);
+		expect(new Set(guidelines.map((item) => item?.join("\n"))).size).toBe(1);
+		expect(guidelines[0]?.join("")).toContain("at least 4 consecutive goal rounds");
+		expect(guidelines[0]?.join("")).toContain("useful remaining work is not blocked");
 	});
 
 	it("create_goal requires direct-human authority", async () => {

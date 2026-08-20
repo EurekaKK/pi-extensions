@@ -85,7 +85,7 @@ pi remove ./extensions/sub-agent
 
 父侧工具：
 
-- `subagent`：spawn 子 Agent，默认后台 continuable。
+- `subagent`：spawn 子 Agent，默认后台 continuable。该工具带一条 dsh 风格 `promptGuidelines`：默认后台、同一条消息并行开启独立委派，只有下一步依赖结果时才前台等待。
 - `subagent_fork`：fork 父已完成轮次，默认前台 one-shot。
 - `send_message`：继续一个后台子 Agent 的会话。
 - `interrupt_agent`：中止目标 Agent 当前轮次。
