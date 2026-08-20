@@ -3,6 +3,9 @@
 为 Pi 提供 dsh 风格的 session 目标管理。目标由模型工具和用户命令共同维护；active + armed 的目标在 Agent
 idle 后由 Goal Round Driver 自动继续，无需独立 evaluator。
 
+当前 goal 的 phase、round、activation 和 objective 通过 `goal.status` widget 在编辑器上方常驻显示，与 Todo
+进度区位于同一区域。
+
 ## 状态
 
 `experimental`
@@ -93,6 +96,18 @@ Continue working toward the objective in this same session...
 - 达到 `maxGoalRounds` 后自动 block，code 为 `round-limit`。
 - 模型完成目标时调用 `update_goal complete`；被阻塞时调用 `update_goal blocked`。
 
+## UI 进度区
+
+`goal.status` widget 位于编辑器上方：
+
+- 第一行显示 phase、已开始 round/上限和 activation；blocked 时附带 blocker code。
+- 第二行显示 objective，并按 active、paused、blocked、complete 使用不同状态标记。
+- `/goal` 命令或 goal mutation 工具成功后立即刷新。
+- active、paused、blocked 和 complete 都保留显示；只有 `/goal clear`、目标 branch 不存在 goal 或 session
+  shutdown 时清除。
+
+TUI 使用宽度感知组件；RPC 通过 UI bridge 发送相同的纯文本两行。JSON 和 print 模式不调用 UI。
+
 ## 恢复与 fork
 
 goal 内容、phase、revision 和 round 数会随 session 持久化。session 恢复、fork 或 tree navigation 后：
@@ -124,12 +139,12 @@ v1 的 evaluator、lifecycle entries、evaluation entries 和 snapshot 数据不
 
 ## 模式支持
 
-| 模式 | goal 工具 | /goal command | Goal Round Driver |
-| --- | --- | --- | --- |
-| TUI | 支持 | 支持 | 支持 |
-| RPC | 支持 | 按 Pi 命令能力 | 支持 |
-| JSON | 支持 | 不支持 | 不支持 |
-| print | 支持 | 不支持 | 不支持 |
+| 模式 | goal 工具 | /goal command | Goal Round Driver | 进度 widget |
+| --- | --- | --- | --- | --- |
+| TUI | 支持 | 支持 | 支持 | 编辑器上方常驻 |
+| RPC | 支持 | 按 Pi 命令能力 | 支持 | 通过 UI bridge |
+| JSON | 支持 | 不支持 | 不支持 | 不显示 |
+| print | 支持 | 不支持 | 不支持 | 不显示 |
 
 ## 开发
 

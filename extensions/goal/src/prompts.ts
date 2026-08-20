@@ -26,9 +26,3 @@ export function renderGoalRoundPrompt(goal: GoalView, round: number): string {
 		"</goal_round>"
 	);
 }
-
-export function renderGoalStatus(view: GoalView | undefined): string {
-	if (view === undefined) return "";
-	const reason = view.blockedReason === undefined ? "" : ` · blocked: ${view.blockedReason.code}`;
-	return `Goal: ${view.phase}${reason} · round ${view.roundsStarted}/${view.maxGoalRounds} · ${view.activation}`;
-}

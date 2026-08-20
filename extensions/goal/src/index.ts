@@ -6,11 +6,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { executeGoalCommand } from "./commands.js";
 import { type FileMutationQueue, GoalConfigurationError, type GoalConfigV1, initializeGoalConfig } from "./config.js";
-import { GOAL_STATUS_KEY } from "./constants.js";
+import { GOAL_ROUND_MESSAGE_TYPE } from "./constants.js";
 import { GoalDriver } from "./driver.js";
-import { renderGoalStatus } from "./prompts.js";
 import { GoalService } from "./service.js";
 import { registerGoalTools } from "./tools.js";
+import { tryProjectGoalWidget } from "./widget.js";
 
 export interface LoadGoalDependencies {
 	readonly agentDir: string;
@@ -27,11 +27,10 @@ function notify(context: ExtensionContext, message: string): void {
 }
 
 function projectStatus(context: ExtensionContext, service: GoalService): void {
-	if (!context.hasUI) return;
 	try {
-		context.ui.setStatus(GOAL_STATUS_KEY, renderGoalStatus(service.get(context)));
+		tryProjectGoalWidget(context, service.get(context));
 	} catch {
-		// Status is advisory.
+		// UI projection and branch-read failures must not change Goal semantics.
 	}
 }
 
@@ -51,6 +50,9 @@ export function registerGoalExtension(pi: ExtensionAPI, config: GoalConfigV1): v
 	registerGoalTools(pi, {
 		service,
 		config,
+		onChanged(context) {
+			projectStatus(context, service);
+		},
 		authority(context) {
 			return driver.authority(context);
 		},
@@ -70,13 +72,7 @@ export function registerGoalExtension(pi: ExtensionAPI, config: GoalConfigV1): v
 
 	pi.on("session_shutdown", (_event, context) => {
 		driver.resetTurn();
-		if (context.hasUI) {
-			try {
-				context.ui.setStatus(GOAL_STATUS_KEY, undefined);
-			} catch {
-				// Status is advisory.
-			}
-		}
+		tryProjectGoalWidget(context, undefined);
 	});
 
 	pi.on("input", (event) => {
@@ -88,7 +84,12 @@ export function registerGoalExtension(pi: ExtensionAPI, config: GoalConfigV1): v
 	});
 
 	pi.on("message_start", (event) => {
-		if (event.message.role === "user") driver.observeGoalRoundMessage(event.message.content);
+		if (
+			event.message.role === "user" ||
+			(event.message.role === "custom" && event.message.customType === GOAL_ROUND_MESSAGE_TYPE)
+		) {
+			driver.observeGoalRoundMessage(event.message.content);
+		}
 	});
 
 	pi.on("agent_end", (event, context) => {

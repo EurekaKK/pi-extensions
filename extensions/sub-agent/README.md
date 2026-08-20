@@ -107,6 +107,10 @@ subagent({ "description": "cache audit", "prompt": "审阅缓存失效逻辑并�
 started subagent <childId>
 ```
 
+这段原始工具结果仍会提供给父模型，保证它能用 child ID 继续控制 Agent。TUI 卡片采用更可读的展示：调用行和
+折叠结果以 `description` 为主，后台任务显示 `Started · <description>`；child ID 只在展开卡片时显示。前台任务
+显示 `Completed · <description>`，折叠时附带结果首行，展开后显示完整结果。
+
 等待结算通知，或继续发送消息：
 
 ```text

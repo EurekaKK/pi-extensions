@@ -13,6 +13,7 @@ export type GoalToolAuthority =
 export interface GoalToolRuntime {
 	readonly service: GoalService;
 	readonly config: GoalConfigV1;
+	onChanged(context: ExtensionContext): void;
 	authority(context: ExtensionContext): GoalToolAuthority;
 }
 
@@ -52,6 +53,11 @@ function resultFor(goal: GoalView | undefined) {
 	};
 }
 
+function mutationResult(runtime: GoalToolRuntime, context: ExtensionContext, goal: GoalView) {
+	runtime.onChanged(context);
+	return Promise.resolve(resultFor(goal));
+}
+
 export function registerGoalTools(pi: { registerTool(tool: unknown): void }, runtime: GoalToolRuntime): void {
 	const promptGuidelines = [goalPolicyGuideline(runtime.config.blockedAfterConsecutiveRounds)];
 	pi.registerTool(
@@ -87,7 +93,7 @@ export function registerGoalTools(pi: { registerTool(tool: unknown): void }, run
 				if (signal?.aborted) throw new Error("Operation aborted");
 				runtime.authority(context);
 				const view = runtime.service.create(context, parameters.objective, parameters.max_goal_rounds);
-				return Promise.resolve(resultFor(view));
+				return mutationResult(runtime, context, view);
 			},
 		}),
 	);
@@ -131,7 +137,7 @@ export function registerGoalTools(pi: { registerTool(tool: unknown): void }, run
 						hasObjective ? parameters.objective : undefined,
 						hasRounds ? parameters.max_goal_rounds : undefined,
 					);
-					return Promise.resolve(resultFor(view));
+					return mutationResult(runtime, context, view);
 				}
 
 				if (parameters.action === "pause" || parameters.action === "resume") {
@@ -146,7 +152,7 @@ export function registerGoalTools(pi: { registerTool(tool: unknown): void }, run
 					}
 					const view =
 						parameters.action === "pause" ? runtime.service.pause(context, ref) : runtime.service.resume(context, ref);
-					return Promise.resolve(resultFor(view));
+					return mutationResult(runtime, context, view);
 				}
 
 				if (hasObjective || hasRounds) {
@@ -159,7 +165,7 @@ export function registerGoalTools(pi: { registerTool(tool: unknown): void }, run
 					if (hasReason) {
 						throw new GoalError("blocked_reason is valid only with action blocked", "GOAL_TOOL_INVALID_UPDATE");
 					}
-					return Promise.resolve(resultFor(runtime.service.complete(context, ref)));
+					return mutationResult(runtime, context, runtime.service.complete(context, ref));
 				}
 				if (!hasReason)
 					throw new GoalError("blocked_reason is required with action blocked", "GOAL_TOOL_INVALID_UPDATE");
@@ -176,7 +182,7 @@ export function registerGoalTools(pi: { registerTool(tool: unknown): void }, run
 					code: "model-reported",
 					message: parameters.blocked_reason as string,
 				});
-				return Promise.resolve(resultFor(view));
+				return mutationResult(runtime, context, view);
 			},
 		}),
 	);

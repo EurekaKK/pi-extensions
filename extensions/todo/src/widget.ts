@@ -72,14 +72,16 @@ function statusColor(status: TodoStatus): "warning" | "dim" | "success" {
 export function projectTodoWidget(context: ExtensionContext, todos: readonly TodoItem[] | null): void {
 	if (!context.hasUI || (context.mode !== "tui" && context.mode !== "rpc")) return;
 	if (todos === null || todos.length === 0) {
-		context.ui.setWidget(TODO_WIDGET_KEY, undefined);
+		context.ui.setWidget(TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
 		return;
 	}
 	if (context.mode === "tui") {
-		context.ui.setWidget(TODO_WIDGET_KEY, (_tui, theme) => new TodoWidgetComponent(todos, theme));
+		context.ui.setWidget(TODO_WIDGET_KEY, (_tui, theme) => new TodoWidgetComponent(todos, theme), {
+			placement: "aboveEditor",
+		});
 		return;
 	}
-	context.ui.setWidget(TODO_WIDGET_KEY, buildTodoWidgetLines(todos));
+	context.ui.setWidget(TODO_WIDGET_KEY, buildTodoWidgetLines(todos), { placement: "aboveEditor" });
 }
 
 export function tryProjectTodoWidget(context: ExtensionContext, todos: readonly TodoItem[] | null): boolean {

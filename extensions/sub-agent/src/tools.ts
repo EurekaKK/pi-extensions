@@ -1,5 +1,6 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { INTERRUPT_AGENT_TOOL_NAME, LIST_AGENTS_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "./constants.js";
 import type { SubAgentConfigV2, SubagentDelegationToolConfigV2 } from "./domain.js";
@@ -22,6 +23,11 @@ const DelegationParameters = Type.Object(
 	{ additionalProperties: false },
 );
 
+interface DelegationResultDetails {
+	readonly childId: string;
+	readonly background: boolean;
+}
+
 function isInteractive(mode: ExtensionContext["mode"]): boolean {
 	return mode === "tui" || mode === "rpc";
 }
@@ -38,6 +44,18 @@ function delegationDescription(tool: SubagentDelegationToolConfigV2): string {
 function delegationGuidelines(tool: SubagentDelegationToolConfigV2): string[] | undefined {
 	if (tool.backgroundMode !== "continuable") return undefined;
 	return [subagentBackgroundGuideline(tool.toolName)];
+}
+
+function resultText(result: {
+	readonly content: readonly { readonly type: string; readonly text?: string }[];
+}): string {
+	return result.content
+		.filter(
+			(block): block is { readonly type: "text"; readonly text: string } =>
+				block.type === "text" && typeof block.text === "string",
+		)
+		.map((block) => block.text)
+		.join("\n");
 }
 
 function listText(entries: readonly SubagentListEntry[]): string {
@@ -63,7 +81,7 @@ export function registerParentTools(
 		const name = toolConfig.toolName;
 		const promptGuidelines = delegationGuidelines(toolConfig);
 		pi.registerTool(
-			defineTool({
+			defineTool<typeof DelegationParameters, DelegationResultDetails>({
 				name,
 				label: name,
 				description: delegationDescription(toolConfig),
@@ -82,13 +100,34 @@ export function registerParentTools(
 					if (runInBackground) {
 						return {
 							content: [{ type: "text" as const, text: `started subagent ${started.childId}` }],
-							details: { childId: started.childId },
+							details: { childId: started.childId, background: true },
 						};
 					}
 					return {
 						content: [{ type: "text" as const, text: started.output ?? "" }],
-						details: { childId: started.childId },
+						details: { childId: started.childId, background: false },
 					};
+				},
+				renderCall(args, theme) {
+					const label = args.description.trim() || "unnamed delegation";
+					return new Text(`${theme.fg("toolTitle", theme.bold(name))} ${theme.fg("muted", `· ${label}`)}`, 0, 0);
+				},
+				renderResult(result, { expanded }, theme, context) {
+					const label = context.args.description.trim() || "unnamed delegation";
+					const output = resultText(result);
+					if (context.isError) {
+						const visible = expanded ? output : (output.split("\n", 1)[0] ?? "Delegation failed");
+						return new Text(theme.fg("error", visible), 0, 0);
+					}
+					if (result.details?.background === true) {
+						const summary = theme.fg("success", `Started · ${label}`);
+						const child = expanded ? `\n${theme.fg("muted", `Agent: ${result.details.childId}`)}` : "";
+						return new Text(`${summary}${child}`, 0, 0);
+					}
+					const summary = theme.fg("success", `Completed · ${label}`);
+					if (output.length === 0) return new Text(summary, 0, 0);
+					const visible = expanded ? output : (output.split("\n", 1)[0] ?? "");
+					return new Text(`${summary}\n${theme.fg("text", visible)}`, 0, 0);
 				},
 			}),
 		);

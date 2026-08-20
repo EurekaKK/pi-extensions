@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONFIG } from "../src/config.js";
 import type { SubagentManager } from "../src/runtime.js";
@@ -10,6 +10,13 @@ interface CapturedTool {
 	readonly description: string;
 	readonly promptGuidelines?: readonly string[];
 	readonly parameters: unknown;
+	readonly renderCall?: (parameters: never, theme: Theme, context: unknown) => { render(width: number): string[] };
+	readonly renderResult?: (
+		result: { content: Array<{ type: "text"; text: string }>; details?: unknown },
+		options: { expanded: boolean; isPartial: boolean },
+		theme: Theme,
+		context: unknown,
+	) => { render(width: number): string[] };
 	execute(
 		toolCallId: string,
 		parameters: never,
@@ -42,6 +49,11 @@ function context(mode: ExtensionContext["mode"]): ExtensionContext {
 function text(result: { content: Array<{ type: "text"; text: string }> }): string {
 	return result.content.map((block) => block.text).join("");
 }
+
+const theme = {
+	fg: (_color: string, value: string) => value,
+	bold: (value: string) => value,
+} as unknown as Theme;
 
 describe("sub-agent v2 parent tools", () => {
 	it("registers the five dsh-aligned tools", () => {
@@ -95,6 +107,34 @@ describe("sub-agent v2 parent tools", () => {
 			context("tui"),
 		);
 		expect(text(foreground)).toBe("final");
+	});
+
+	it("renders delegation cards around the readable description and hides child ids when collapsed", async () => {
+		const manager = {
+			start: vi.fn(async () => ({ childId: "70b2e418-e7ee-4a57-a1a3-4593ea0dd38", foreground: false })),
+		} as unknown as SubagentManager;
+		const subagent = toolAt(captureTools(manager), 0);
+		const args = { description: "Audit cache invalidation", prompt: "Inspect the cache" };
+		const result = await subagent.execute("c1", args as never, undefined, undefined, context("tui"));
+		const renderContext = { args };
+
+		const callLines = subagent.renderCall?.(args as never, theme, renderContext).render(120) ?? [];
+		expect(callLines.join("\n")).toContain("Audit cache invalidation");
+
+		const collapsed =
+			subagent
+				.renderResult?.(result, { expanded: false, isPartial: false }, theme, renderContext)
+				.render(120)
+				.join("\n") ?? "";
+		expect(collapsed).toContain("Audit cache invalidation");
+		expect(collapsed).not.toContain("70b2e418-e7ee-4a57-a1a3-4593ea0dd38");
+
+		const expanded =
+			subagent
+				.renderResult?.(result, { expanded: true, isPartial: false }, theme, renderContext)
+				.render(120)
+				.join("\n") ?? "";
+		expect(expanded).toContain("70b2e418-e7ee-4a57-a1a3-4593ea0dd38");
 	});
 
 	it("rejects background subagent in print mode", async () => {

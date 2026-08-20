@@ -41,26 +41,20 @@ function restoreVisibleTodos(context: ExtensionContext, state: TodoRuntimeState)
 		return;
 	}
 
-	let latestValidIndex = -1;
 	let latestValidTodos: readonly TodoItem[] | null = null;
-	let latestUserMessageIndex = -1;
 	let foundInvalidV2 = false;
 
-	for (const [index, entry] of entries.entries()) {
-		if (entry.type === "message" && entry.message.role === "user") {
-			latestUserMessageIndex = index;
-		}
+	for (const entry of entries) {
 		if (entry.type !== "custom" || entry.customType !== TODO_SNAPSHOT_ENTRY_TYPE) continue;
 		const parsed = parseTodoSnapshot(entry.data);
 		if (parsed.status === "valid") {
-			latestValidIndex = index;
 			latestValidTodos = parsed.todos;
 		} else if (parsed.status === "invalid") {
 			foundInvalidV2 = true;
 		}
 	}
 
-	state.visibleTodos = latestValidTodos !== null && latestValidIndex > latestUserMessageIndex ? latestValidTodos : null;
+	state.visibleTodos = latestValidTodos;
 	tryProjectTodoWidget(context, state.visibleTodos);
 
 	if (foundInvalidV2 && !state.warningShown) {
@@ -82,11 +76,6 @@ export function registerTodoExtension(pi: ExtensionAPI, config: TodoConfigV1): v
 
 	pi.on("session_tree", (_event, context) => {
 		restoreVisibleTodos(context, state);
-	});
-
-	pi.on("turn_start", (_event, context) => {
-		state.visibleTodos = null;
-		tryProjectTodoWidget(context, null);
 	});
 
 	pi.on("session_shutdown", (_event, context) => {

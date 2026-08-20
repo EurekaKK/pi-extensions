@@ -37,14 +37,15 @@ describe("Todo v2 widget", () => {
 		const list = [{ content: "work", status: "pending" }] as const;
 
 		projectTodoWidget({ ...base, mode: "tui" } as ExtensionContext, list);
-		expect(setWidget).toHaveBeenCalledWith(TODO_WIDGET_KEY, expect.any(Function));
+		expect(setWidget).toHaveBeenCalledWith(TODO_WIDGET_KEY, expect.any(Function), { placement: "aboveEditor" });
 
 		setWidget.mockClear();
 		projectTodoWidget({ ...base, mode: "rpc" } as ExtensionContext, list);
-		expect(setWidget).toHaveBeenCalledWith(TODO_WIDGET_KEY, [
-			"Todos · 0 in progress · 1 pending · 0 completed",
-			"○ work",
-		]);
+		expect(setWidget).toHaveBeenCalledWith(
+			TODO_WIDGET_KEY,
+			["Todos · 0 in progress · 1 pending · 0 completed", "○ work"],
+			{ placement: "aboveEditor" },
+		);
 
 		setWidget.mockClear();
 		projectTodoWidget({ ...base, mode: "print" } as ExtensionContext, list);
@@ -65,7 +66,7 @@ describe("Todo v2 widget", () => {
 
 		projectTodoWidget(context, null);
 		projectTodoWidget(context, []);
-		expect(setWidget).toHaveBeenNthCalledWith(1, TODO_WIDGET_KEY, undefined);
-		expect(setWidget).toHaveBeenNthCalledWith(2, TODO_WIDGET_KEY, undefined);
+		expect(setWidget).toHaveBeenNthCalledWith(1, TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
+		expect(setWidget).toHaveBeenNthCalledWith(2, TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
 	});
 });

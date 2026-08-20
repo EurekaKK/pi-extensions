@@ -3,8 +3,8 @@
 为 Pi 提供模型可见的结构化任务列表。模型通过 `todo_write` 工具每次发送完整列表；每次成功写入都会把
 完整快照追加到当前 Pi session，后写覆盖先写。
 
-`todo:status` widget 表示“本轮次的有效计划”：`turn_end` 时保留，下一个 `turn_start` 清空，直到模型再次
-调用 `todo_write`。
+`todo:status` widget 在编辑器上方常驻显示当前计划；它跨 turn 保留，直到模型用 `todo_write({ todos: [] })`
+显式清空，或 session 被关闭。
 
 本 extension 不提供部分更新、回读工具、ID、取消状态、状态机、reminder 或自动续跑。
 
@@ -68,7 +68,7 @@ extension 注册：
 - LLM 工具 `todo_write`。
 - UI widget `todo:status`。
 - custom session entry `todo:snapshot`（version 2）。
-- `session_start`、`session_tree`、`session_shutdown`、`turn_start` 生命周期处理器。
+- `session_start`、`session_tree`、`session_shutdown` 生命周期处理器。
 
 它不注册 slash command、键盘快捷键、CLI flag、消息 renderer、timer、watcher、进程或 socket。
 
@@ -135,11 +135,11 @@ todo_write({ "todos": [] })
 
 ## Widget 语义
 
-`todo:status` 显示当前轮次的有效计划：
+`todo:status` 在编辑器上方显示当前计划：
 
 - `todo_write` 成功时显示最新列表。
-- `turn_end` 保留列表，方便用户阅读刚完成的工作。
-- 下一个 `turn_start` 清空，不写任何 session entry。
+- turn 边界不会清空或隐藏列表。
+- session 恢复、fork 和 tree navigation 后显示目标 branch 的最后一条有效快照。
 - 空列表 `[]` 清空 widget。
 
 TUI 最多显示 5 项，顺序为 `in_progress`、`pending`、`completed`，超出的项在 header 中显示 `+N`。RPC 模式
@@ -159,8 +159,7 @@ TUI 最多显示 5 项，顺序为 `in_progress`、`pending`、`completed`，超
 custom entry 不进入 LLM context。恢复时读取当前 conversation branch 上最后一条有效 version 2 快照；
 多个快照后写覆盖先写。
 
-- 最后一条 v2 快照之后没有新的 user message 时，恢复显示该计划。
-- 之后已经有新 user message 时，widget 保持为空。
+- 最后一条有效 v2 快照会持续显示；后续 user message 不会隐式清空计划。
 - fork 和 tree navigation 只读取目标 branch；其他 branch 的写入不会泄漏进来。
 - `Ctrl+D` 退出不是删除，session 恢复遵循上述规则。
 - 删除 Pi session 会一并删除 Todo 数据。Pi 可能先把 session 文件移入系统废纸篓。
@@ -171,7 +170,7 @@ custom entry 不进入 LLM context。恢复时读取当前 conversation branch �
 
 | 模式 | `todo_write` 工具 | session 持久化 | widget |
 | --- | --- | --- | --- |
-| TUI | 支持 | 支持 | 常驻计划条，按轮次清空 |
+| TUI | 支持 | 支持 | 编辑器上方常驻，显式清空 |
 | RPC | 支持 | 支持 | 通过 UI bridge；客户端可选择不显示 |
 | JSON | 支持 | 支持 | 不显示 |
 | print | 支持 | 支持 | 不显示 |
@@ -185,7 +184,7 @@ custom entry 不进入 LLM context。恢复时读取当前 conversation branch �
 - 不支持部分更新、回读工具、ID、优先级、依赖、截止时间、负责人、标签或外部项目同步。
 - 没有 `cancelled` 状态、reopen、显式 close 或状态转换校验；旧列表不会被运行时强制关闭。
 - 没有 slash command、快捷键、用户编辑器、reminder 或自动续跑。
-- 运行时不读取上次列表；列表一致性由模型负责。
+- 没有模型可调用的回读工具；UI 恢复会读取 session 快照，但列表一致性仍由模型负责。
 - 没有固定总上限；Todo 数量、文本长度和 session 工具调用次数可以持续增长。
 
 ## 权限与副作用

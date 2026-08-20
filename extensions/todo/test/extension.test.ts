@@ -235,7 +235,9 @@ describe("Todo v2 extension", () => {
 				],
 			},
 		});
-		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, expect.anything());
+		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, expect.anything(), {
+			placement: "aboveEditor",
+		});
 	});
 
 	it("uses last-write-wins and accepts an empty list as clear", async () => {
@@ -256,7 +258,7 @@ describe("Todo v2 extension", () => {
 		const cleared = await harness.invokeTodo({ todos: [] });
 		expect(cleared.isError).toBe(false);
 		expect(harness.appendedEntries.at(-1)?.data).toEqual({ version: 2, todos: [] });
-		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined);
+		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
 	});
 
 	it("enforces allowParallelInProgress before writing anything", async () => {
@@ -312,23 +314,22 @@ describe("Todo v2 extension", () => {
 		expect(harness.appendedEntries).toHaveLength(0);
 	});
 
-	it("keeps the widget through turn_end and clears it on the next turn_start", async () => {
+	it("keeps the widget visible across turn boundaries until explicitly cleared", async () => {
 		const harness = new TodoHarness("tui", true, CONFIG_TRUE);
 		await harness.lifecycle("session_start");
 		await harness.invokeTodo({ todos: [{ content: "work", status: "in_progress" }] });
-		const callsBeforeTurnEnd = harness.setWidget.mock.calls.length;
+		const callsBeforeBoundary = harness.setWidget.mock.calls.length;
 
 		await harness.emit("turn_end", { type: "turn_end", turnIndex: 1, message: {}, toolResults: [] });
-		expect(harness.setWidget.mock.calls.length).toBe(callsBeforeTurnEnd);
+		expect(harness.setWidget.mock.calls.length).toBe(callsBeforeBoundary);
 
 		await harness.turnStart();
-		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined);
-
-		await harness.invokeTodo({ todos: [{ content: "next", status: "pending" }] });
-		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, expect.anything());
+		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, expect.anything(), {
+			placement: "aboveEditor",
+		});
 	});
 
-	it("restores a plan only when the latest v2 snapshot is after the latest user message", async () => {
+	it("restores the latest v2 snapshot even after a later user message", async () => {
 		const harness = new TodoHarness("tui", true, CONFIG_TRUE);
 		const root = userEntry("u1", null);
 		const snapshot = customEntry("s1", "u1", {
@@ -338,12 +339,16 @@ describe("Todo v2 extension", () => {
 
 		harness.setBranch([root, snapshot]);
 		await harness.lifecycle("session_start");
-		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, expect.anything());
+		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, expect.anything(), {
+			placement: "aboveEditor",
+		});
 
 		const nextTurn = userEntry("u2", "s1");
 		harness.setBranch([root, snapshot, nextTurn]);
 		await harness.lifecycle("session_tree");
-		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined);
+		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, expect.anything(), {
+			placement: "aboveEditor",
+		});
 	});
 
 	it("ignores v1 data and warns once for malformed v2 data", async () => {
@@ -355,7 +360,7 @@ describe("Todo v2 extension", () => {
 		harness.setBranch([root, old, invalid]);
 		await harness.lifecycle("session_start");
 
-		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined);
+		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
 		expect(harness.notify).toHaveBeenCalledTimes(1);
 		expect(String(harness.notify.mock.calls[0]?.[0])).toContain("invalid version 2 snapshot");
 	});
