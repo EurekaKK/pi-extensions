@@ -38,6 +38,25 @@ pi-extensions/
 - npm；仓库不混用 pnpm 或 Yarn。
 - 评测夹具另需 Python `3.12` 与 [uv](https://docs.astral.sh/uv/)；Harbor 以 peer 声明在 `eval/`。
 
+## 安装
+
+本仓库的 extension 采用 npm 风格安装：先把 package 复制到 Pi agent 目录下的
+`~/.pi/agent/my-extensions/<name>/`，再把该副本登记进 Pi。Pi 对本地路径包只登记原路径、
+不做复制，因此必须先复制再登记，运行中的 Pi 才能与开发工作树解耦。
+
+```bash
+# 安装或更新（复制 + pi install），可一次传多个名字
+scripts/install-extension.sh todo goal
+
+# 卸载
+pi remove ~/.pi/agent/my-extensions/todo
+rm -rf ~/.pi/agent/my-extensions/todo
+```
+
+- 修改代码后重新运行脚本即可同步副本；重启 Pi 或在会话内 `/reload` 后生效。
+- `@earendil-works/*` core 包由 Pi 自带（声明为 `peerDependencies`），副本无需 `npm install`。
+- 各 extension 的启用/停用（`pi config`）与状态文件位置见各自 README。
+
 ## 开发约定
 
 新 extension 应：

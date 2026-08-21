@@ -12,16 +12,22 @@ idle 后由 Goal Round Driver 自动继续，无需独立 evaluator。
 
 ## 安装、启用与卸载
 
-要求 Node.js `>=22.19.0` 和本机最新版 Pi。从仓库根目录安装本地 package：
+要求 Node.js `>=22.19.0` 和本机最新版 Pi。安装采用 npm 式两步：先从仓库根目录把 package
+复制到 `~/.pi/agent/my-extensions/goal/`，再登记该副本。仓库脚本一步完成：
 
 ```bash
-pi install ./extensions/goal
+scripts/install-extension.sh goal
+# 等价于：
+#   rsync -a --delete --exclude node_modules --exclude .DS_Store \
+#     extensions/goal/ ~/.pi/agent/my-extensions/goal/
+#   pi install ~/.pi/agent/my-extensions/goal
 ```
 
 使用 `pi config` 启用或停用。卸载：
 
 ```bash
-pi remove ./extensions/goal
+pi remove ~/.pi/agent/my-extensions/goal
+rm -rf ~/.pi/agent/my-extensions/goal
 ```
 
 卸载不会修改已有 Pi session。

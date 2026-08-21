@@ -16,16 +16,22 @@
 
 ## 安装、启用与卸载
 
-要求 Node.js `>=22.19.0` 和本机最新版 Pi。从仓库根目录安装本地 package：
+要求 Node.js `>=22.19.0` 和本机最新版 Pi。安装采用 npm 式两步：先从仓库根目录把 package
+复制到 `~/.pi/agent/my-extensions/todo/`，再登记该副本。仓库脚本一步完成：
 
 ```bash
-pi install ./extensions/todo
+scripts/install-extension.sh todo
+# 等价于：
+#   rsync -a --delete --exclude node_modules --exclude .DS_Store \
+#     extensions/todo/ ~/.pi/agent/my-extensions/todo/
+#   pi install ~/.pi/agent/my-extensions/todo
 ```
 
 使用 `pi config` 启用或停用该 extension。卸载：
 
 ```bash
-pi remove ./extensions/todo
+pi remove ~/.pi/agent/my-extensions/todo
+rm -rf ~/.pi/agent/my-extensions/todo
 ```
 
 卸载不会删除 agent 配置文件，也不会修改已有 Pi session。不再需要时，可手动删除

@@ -13,16 +13,22 @@ v2 移除了 v1 的 Guardian/Worker sidecar、IPC、mailbox 和 spool，全部 c
 
 ## 安装、启用与卸载
 
-要求 Node.js `>=22.19.0` 和本机最新版 Pi。从仓库根目录安装本地 package：
+要求 Node.js `>=22.19.0` 和本机最新版 Pi。安装采用 npm 式两步：先从仓库根目录把 package
+复制到 `~/.pi/agent/my-extensions/sub-agent/`，再登记该副本。仓库脚本一步完成：
 
 ```bash
-pi install ./extensions/sub-agent
+scripts/install-extension.sh sub-agent
+# 等价于：
+#   rsync -a --delete --exclude node_modules --exclude .DS_Store \
+#     extensions/sub-agent/ ~/.pi/agent/my-extensions/sub-agent/
+#   pi install ~/.pi/agent/my-extensions/sub-agent
 ```
 
 使用 `pi config` 启用或停用。卸载：
 
 ```bash
-pi remove ./extensions/sub-agent
+pi remove ~/.pi/agent/my-extensions/sub-agent
+rm -rf ~/.pi/agent/my-extensions/sub-agent
 ```
 
 卸载不会删除配置或 child session 文件。

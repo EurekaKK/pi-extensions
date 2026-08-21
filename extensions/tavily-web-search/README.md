@@ -14,10 +14,15 @@
 
 要求 Node.js `>=22.19.0`、本机最新版 Pi，以及有效的 Tavily API key。
 
-从仓库根目录安装本地 package：
+安装采用 npm 式两步：先从仓库根目录把 package 复制到
+`~/.pi/agent/my-extensions/tavily-web-search/`，再登记该副本。仓库脚本一步完成：
 
 ```bash
-pi install ./extensions/tavily-web-search
+scripts/install-extension.sh tavily-web-search
+# 等价于：
+#   rsync -a --delete --exclude node_modules --exclude .DS_Store \
+#     extensions/tavily-web-search/ ~/.pi/agent/my-extensions/tavily-web-search/
+#   pi install ~/.pi/agent/my-extensions/tavily-web-search
 ```
 
 通过 `pi config` 启用或停用。启动 Pi 前提供：
@@ -29,7 +34,8 @@ export TAVILY_API_KEY="<your Tavily API key>"
 extension 不会把 key 写入配置或 session。它在加载时读一次环境变量；修改后需重启 Pi。卸载：
 
 ```bash
-pi remove ./extensions/tavily-web-search
+pi remove ~/.pi/agent/my-extensions/tavily-web-search
+rm -rf ~/.pi/agent/my-extensions/tavily-web-search
 ```
 
 卸载不会删除用户配置。不再需要时可手动删除 agent dir 下的 `tavily-web-search/`。

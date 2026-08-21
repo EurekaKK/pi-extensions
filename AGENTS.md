@@ -10,7 +10,9 @@
 
 - 所有 extension 位于 `extensions/<name>/`；只有 `extensions/` 下的一级目录代表独立 extension。
 - `templates/extension/` 是新 extension 的脚手架来源。首次创建 extension 时若模板尚不存在，应先建立与本文件一致的模板。
-- `scripts/` 仅存放仓库级开发与发布辅助脚本，不包含 extension 运行时代码。
+- `scripts/` 仅存放仓库级开发与发布辅助脚本，不包含 extension 运行时代码。本地安装统一走
+  `scripts/install-extension.sh`：先把 package 复制到 `~/.pi/agent/my-extensions/<name>/` 再
+  `pi install` 该副本（Pi 对本地路径只登记不复制）；extension README 的安装说明必须与该模式一致。
 - `eval/` 是独立的 Python Harbor 评测夹具（uv / Harbor peer），不是 Pi extension，不得加入 npm workspaces。
 - extension 之间必须保持独立，不得直接引用兄弟 extension 的源码或依赖其未声明的文件。
 - extension 不得引用 `eval/`。
