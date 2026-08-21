@@ -6,7 +6,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { executeGoalCommand } from "./commands.js";
 import { type FileMutationQueue, GoalConfigurationError, type GoalConfigV1, initializeGoalConfig } from "./config.js";
-import { GOAL_ROUND_MESSAGE_TYPE } from "./constants.js";
 import { GoalDriver } from "./driver.js";
 import { GoalService } from "./service.js";
 import { registerGoalTools } from "./tools.js";
@@ -36,7 +35,9 @@ function projectStatus(context: ExtensionContext, service: GoalService): void {
 
 export function registerGoalExtension(pi: ExtensionAPI, config: GoalConfigV1): void {
 	const service = new GoalService(pi, config.defaultMaxGoalRounds);
-	const driver = new GoalDriver(pi, service);
+	const driver = new GoalDriver(pi, service, {
+		onSettled: (context) => projectStatus(context, service),
+	});
 
 	pi.registerCommand("goal", {
 		description: "Create, edit, pause, resume, clear, or view the same-session goal",
@@ -60,46 +61,16 @@ export function registerGoalExtension(pi: ExtensionAPI, config: GoalConfigV1): v
 
 	pi.on("session_start", (_event, context) => {
 		service.disarm(context.sessionManager.getSessionId());
-		driver.resetTurn();
 		projectStatus(context, service);
 	});
 
 	pi.on("session_tree", (_event, context) => {
 		service.disarm(context.sessionManager.getSessionId());
-		driver.resetTurn();
 		projectStatus(context, service);
 	});
 
 	pi.on("session_shutdown", (_event, context) => {
-		driver.resetTurn();
 		tryProjectGoalWidget(context, undefined);
-	});
-
-	pi.on("input", (event) => {
-		driver.notifyInput(event.source);
-	});
-
-	pi.on("turn_start", () => {
-		driver.beginTurn();
-	});
-
-	pi.on("message_start", (event) => {
-		if (
-			event.message.role === "user" ||
-			(event.message.role === "custom" && event.message.customType === GOAL_ROUND_MESSAGE_TYPE)
-		) {
-			driver.observeGoalRoundMessage(event.message.content);
-		}
-	});
-
-	pi.on("agent_end", (event, context) => {
-		driver.handleAgentEnd(event, context);
-	});
-
-	pi.on("agent_settled", async (_event, context) => {
-		driver.finishRun();
-		await driver.maybeDrive(context);
-		projectStatus(context, service);
 	});
 }
 
