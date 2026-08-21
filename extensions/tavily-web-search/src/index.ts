@@ -5,7 +5,7 @@ import {
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { TavilyClient } from "./client.js";
-import { type FileMutationQueue, initializeTavilyConfig, TavilyConfigurationError } from "./config.js";
+import { type FileMutationQueue, initializeTavilyConfig } from "./config.js";
 import { EXTENSION_ID } from "./constants.js";
 import { registerTavilyTools } from "./tools.js";
 
@@ -47,12 +47,7 @@ export async function loadTavilyWebSearch(pi: ExtensionAPI, dependencies: LoadTa
 		}
 		registerTavilyTools(pi, initialized.config, new TavilyClient({ apiKey, fetch: dependencies.fetch }));
 	} catch (error) {
-		const detail =
-			error instanceof TavilyConfigurationError
-				? error.message
-				: error instanceof Error
-					? error.message
-					: String(error);
+		const detail = error instanceof Error ? error.message : String(error);
 		registerDisabled(pi, `${EXTENSION_ID} is disabled: ${detail}`);
 	}
 }
@@ -67,4 +62,3 @@ export default async function tavilyWebSearch(pi: ExtensionAPI): Promise<void> {
 }
 
 export type { TavilyConfigV1 } from "./config.js";
-export { TavilyConfigurationError };

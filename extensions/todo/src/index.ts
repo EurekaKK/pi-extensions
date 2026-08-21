@@ -5,7 +5,7 @@ import {
 	type SessionEntry,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
-import { type FileMutationQueue, initializeTodoConfig, TodoConfigurationError, type TodoConfigV1 } from "./config.js";
+import { type FileMutationQueue, initializeTodoConfig, type TodoConfigV1 } from "./config.js";
 import { TODO_SNAPSHOT_ENTRY_TYPE } from "./constants.js";
 import { createTodoSnapshot, isFullyCompleted, parseTodoSnapshot, type TodoItem } from "./domain.js";
 import { createTodoToolDefinition } from "./tool.js";
@@ -130,4 +130,3 @@ export default async function todo(pi: ExtensionAPI): Promise<void> {
 }
 
 export type { TodoConfigV1 };
-export { TodoConfigurationError };

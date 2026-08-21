@@ -2,9 +2,9 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { StrictConfigError } from "config-store";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-	ContextManagementConfigurationError,
 	DEFAULT_CONFIG,
 	getContextManagementConfigPath,
 	initializeContextManagementConfig,
@@ -34,7 +34,7 @@ describe("context-management config", () => {
 	it("rejects retainRatio that is not below thresholdRatio", () => {
 		expect(() =>
 			validateContextManagementConfig({ ...DEFAULT_CONFIG, thresholdRatio: 0.5, retainRatio: 0.5 }, "test.json"),
-		).toThrow(ContextManagementConfigurationError);
+		).toThrow(StrictConfigError);
 	});
 
 	it("rejects unknown fields and old versions", async () => {
@@ -42,7 +42,7 @@ describe("context-management config", () => {
 		await mkdir(configDir, { recursive: true, mode: 0o700 });
 		await writeFile(getContextManagementConfigPath(agentDir), '{"version":0,"auto":true}', { mode: 0o600 });
 		await expect(initializeContextManagementConfig({ agentDir, withFileMutationQueue })).rejects.toBeInstanceOf(
-			ContextManagementConfigurationError,
+			StrictConfigError,
 		);
 	});
 });

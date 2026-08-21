@@ -14,6 +14,8 @@
   `scripts/install-extension.sh`：先把 package 复制到 `~/.pi/agent/my-extensions/<name>/` 再
   `pi install` 该副本（Pi 对本地路径只登记不复制）；extension README 的安装说明必须与该模式一致。
 - `eval/` 是独立的 Python Harbor 评测夹具（uv / Harbor peer），不是 Pi extension，不得加入 npm workspaces。
+- `packages/` 存放内部共享包（如 `config-store`）：它们是普通 npm workspace 包，不是 Pi extension，不注册 Pi
+  资源，也不进入根 README 的 extension 索引；extension 只能以显式依赖声明使用它们。
 - extension 之间必须保持独立，不得直接引用兄弟 extension 的源码或依赖其未声明的文件。
 - extension 不得引用 `eval/`。
 - 每个 extension 必须能够独立安装、运行、检查、测试和发布。
@@ -72,6 +74,8 @@ biome.json
 - 每个 extension 自带开发配置，并在自己的 `devDependencies` 中声明 Biome、TypeScript 和 Vitest；配置一致性由模板保证。
 - Pi 核心包使用当前 `@earendil-works/*` scope，放入 `peerDependencies`，版本范围按官方要求使用 `"*"`，不得打包进 extension。
 - 运行时依赖放入 `dependencies`，不得依赖 `devDependencies` 才能运行。
+- extension 间的共性实现优先沉淀为 `packages/<name>/` 内部共享包并以依赖声明引用（见 ADR-0034）；
+  直接复制守卫、校验器等横切代码到多个 extension 是漂移源，不允许新增此类拷贝。
 - 能用 Node.js 标准库或 Pi API 完成时，不新增运行时依赖。
 - 新增运行时依赖前，必须说明用途、替代方案和供应链风险并取得确认。
 - 禁止在运行时下载或执行未声明的依赖。

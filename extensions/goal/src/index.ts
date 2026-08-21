@@ -5,7 +5,7 @@ import {
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { executeGoalCommand } from "./commands.js";
-import { type FileMutationQueue, GoalConfigurationError, type GoalConfigV1, initializeGoalConfig } from "./config.js";
+import { type FileMutationQueue, type GoalConfigV1, initializeGoalConfig } from "./config.js";
 import { GoalDriver } from "./driver.js";
 import { GoalService } from "./service.js";
 import { registerGoalTools } from "./tools.js";
@@ -101,4 +101,3 @@ export default async function goal(pi: ExtensionAPI): Promise<void> {
 }
 
 export type { GoalConfigV1 };
-export { GoalConfigurationError };

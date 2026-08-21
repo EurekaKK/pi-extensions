@@ -1,31 +1,30 @@
-import { constants as fsConstants } from "node:fs";
-import { chmod, lstat, mkdir, open, readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import {
+	type FileMutationQueue,
+	hasExactKeys,
+	initializeStrictConfig,
+	isRecord,
+	MAX_CONFIG_BYTES,
+	StrictConfigError,
+	type StrictConfigResult,
+} from "config-store";
 import type { SubAgentConfigV2, SubagentDelegationToolConfigV2 } from "./domain.js";
 
 export const CONFIG_DIRECTORY_NAME = "sub-agent";
 export const CONFIG_FILE_NAME = "config.json";
 export const CONFIG_VERSION = 2;
-export const MAX_CONFIG_BYTES = 64 * 1024;
-export const CONFIG_DIRECTORY_MODE = 0o700;
-export const CONFIG_FILE_MODE = 0o600;
 
-export type FileMutationQueue = <T>(filePath: string, mutation: () => Promise<T>) => Promise<T>;
+export type { FileMutationQueue };
+export { MAX_CONFIG_BYTES };
 
 export interface InitializeSubAgentConfigOptions {
 	readonly agentDir: string;
 	readonly withFileMutationQueue: FileMutationQueue;
 }
 
-export interface InitializedSubAgentConfig {
-	readonly configDir: string;
-	readonly configPath: string;
-	readonly config: SubAgentConfigV2;
-	readonly created: boolean;
-}
+export type InitializedSubAgentConfig = StrictConfigResult<SubAgentConfigV2>;
 
 const THINKING_LEVELS = new Set(["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 const DEFAULT_AGENT_OPTIONS = Object.freeze({
 	model: "inherit",
@@ -59,43 +58,8 @@ export const DEFAULT_CONFIG: SubAgentConfigV2 = Object.freeze({
 
 const DEFAULT_CONFIG_TEXT = `${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`;
 
-export class SubAgentConfigurationError extends Error {
-	readonly configPath: string;
-
-	constructor(configPath: string, reason: string) {
-		super(`${configPath}: ${reason}`);
-		this.name = "SubAgentConfigurationError";
-		this.configPath = configPath;
-	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-	const prototype = Object.getPrototypeOf(value);
-	return prototype === Object.prototype || prototype === null;
-}
-
-function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
-	const actual = Object.keys(value).sort();
-	const keys = [...expected].sort();
-	return (
-		Object.getOwnPropertySymbols(value).length === 0 &&
-		actual.length === keys.length &&
-		actual.every((key, index) => key === keys[index])
-	);
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-	return error instanceof Error && "code" in error;
-}
-
-function describeIoError(error: unknown): string {
-	if (isNodeError(error) && typeof error.code === "string") return `filesystem error ${error.code}`;
-	return "filesystem operation failed";
-}
-
 function fail(configPath: string, reason: string): never {
-	throw new SubAgentConfigurationError(configPath, reason);
+	throw new StrictConfigError(configPath, reason);
 }
 
 function requireNonBlankString(value: unknown, field: string, configPath: string): string {
@@ -229,62 +193,6 @@ export function validateSubAgentConfig(value: unknown, configPath: string): SubA
 	});
 }
 
-async function readStrictJson(configPath: string): Promise<unknown> {
-	let before: Awaited<ReturnType<typeof lstat>>;
-	try {
-		before = await lstat(configPath);
-	} catch (error) {
-		fail(configPath, `cannot inspect config (${describeIoError(error)})`);
-	}
-	if (!before.isFile()) fail(configPath, "config path must be a regular file");
-	if (before.size > MAX_CONFIG_BYTES) fail(configPath, `file exceeds ${MAX_CONFIG_BYTES} UTF-8 bytes`);
-
-	let bytes: Uint8Array;
-	try {
-		bytes = await readFile(configPath);
-	} catch (error) {
-		fail(configPath, `cannot read config (${describeIoError(error)})`);
-	}
-	if (bytes.byteLength > MAX_CONFIG_BYTES) fail(configPath, `file exceeds ${MAX_CONFIG_BYTES} UTF-8 bytes`);
-
-	let after: Awaited<ReturnType<typeof lstat>>;
-	try {
-		after = await lstat(configPath);
-	} catch (error) {
-		fail(configPath, `cannot re-check config (${describeIoError(error)})`);
-	}
-	if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size) {
-		fail(configPath, "config changed while it was being read");
-	}
-
-	let text: string;
-	try {
-		text = TEXT_DECODER.decode(bytes);
-	} catch {
-		fail(configPath, "file is not valid UTF-8");
-	}
-	try {
-		return JSON.parse(text) as unknown;
-	} catch {
-		return fail(configPath, "file is not strict JSON");
-	}
-}
-
-async function createDefaultConfig(configPath: string): Promise<boolean> {
-	let handle: Awaited<ReturnType<typeof open>> | undefined;
-	try {
-		handle = await open(configPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, CONFIG_FILE_MODE);
-		await handle.writeFile(DEFAULT_CONFIG_TEXT, "utf8");
-		await handle.sync();
-		return true;
-	} catch (error) {
-		if (isNodeError(error) && error.code === "EEXIST") return false;
-		return fail(configPath, `cannot create default config (${describeIoError(error)})`);
-	} finally {
-		await handle?.close();
-	}
-}
-
 export function getSubAgentConfigPath(agentDir: string): string {
 	return join(agentDir, CONFIG_DIRECTORY_NAME, CONFIG_FILE_NAME);
 }
@@ -292,20 +200,12 @@ export function getSubAgentConfigPath(agentDir: string): string {
 export async function initializeSubAgentConfig(
 	options: InitializeSubAgentConfigOptions,
 ): Promise<InitializedSubAgentConfig> {
-	const configDir = join(options.agentDir, CONFIG_DIRECTORY_NAME);
-	const configPath = join(configDir, CONFIG_FILE_NAME);
-
-	return options.withFileMutationQueue(configPath, async () => {
-		try {
-			await mkdir(configDir, { recursive: true, mode: CONFIG_DIRECTORY_MODE });
-			await chmod(configDir, CONFIG_DIRECTORY_MODE);
-		} catch (error) {
-			fail(configPath, `cannot prepare config directory (${describeIoError(error)})`);
-		}
-
-		const created = await createDefaultConfig(configPath);
-		const parsed = await readStrictJson(configPath);
-		const config = validateSubAgentConfig(parsed, configPath);
-		return Object.freeze({ configDir, configPath, config, created });
+	return initializeStrictConfig({
+		agentDir: options.agentDir,
+		directoryName: CONFIG_DIRECTORY_NAME,
+		fileName: CONFIG_FILE_NAME,
+		defaultText: DEFAULT_CONFIG_TEXT,
+		validate: validateSubAgentConfig,
+		withFileMutationQueue: options.withFileMutationQueue,
 	});
 }

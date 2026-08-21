@@ -3,7 +3,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"workspaces": ["extensions/*"],
+	"workspaces": ["extensions/*", "packages/*"],
 	"engines": {
 		"node": ">=22.19.0"
 	},

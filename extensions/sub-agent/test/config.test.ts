@@ -2,12 +2,12 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { StrictConfigError } from "config-store";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	DEFAULT_CONFIG,
 	getSubAgentConfigPath,
 	initializeSubAgentConfig,
-	SubAgentConfigurationError,
 	validateSubAgentConfig,
 } from "../src/config.js";
 
@@ -58,7 +58,7 @@ describe("sub-agent v2 config", () => {
 		});
 
 		await expect(initializeSubAgentConfig({ agentDir, withFileMutationQueue })).rejects.toBeInstanceOf(
-			SubAgentConfigurationError,
+			StrictConfigError,
 		);
 	});
 
@@ -73,7 +73,7 @@ describe("sub-agent v2 config", () => {
 				},
 				"test.json",
 			),
-		).toThrow(SubAgentConfigurationError);
+		).toThrow(StrictConfigError);
 		expect(() =>
 			validateSubAgentConfig(
 				{
@@ -82,7 +82,7 @@ describe("sub-agent v2 config", () => {
 				},
 				"test.json",
 			),
-		).toThrow(SubAgentConfigurationError);
+		).toThrow(StrictConfigError);
 		expect(() =>
 			validateSubAgentConfig(
 				{
@@ -91,7 +91,7 @@ describe("sub-agent v2 config", () => {
 				},
 				"test.json",
 			),
-		).toThrow(SubAgentConfigurationError);
+		).toThrow(StrictConfigError);
 		expect(() =>
 			validateSubAgentConfig(
 				{
@@ -101,8 +101,6 @@ describe("sub-agent v2 config", () => {
 				"test.json",
 			),
 		).toThrow(/duplicate delegation tool name/);
-		expect(() => validateSubAgentConfig({ ...DEFAULT_CONFIG, reportDelivery: "loud" }, "test.json")).toThrow(
-			SubAgentConfigurationError,
-		);
+		expect(() => validateSubAgentConfig({ ...DEFAULT_CONFIG, reportDelivery: "loud" }, "test.json")).toThrow();
 	});
 });

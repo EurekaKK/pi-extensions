@@ -6,7 +6,7 @@ import {
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { createPiChildSessionFactory } from "./child-session.js";
-import { type FileMutationQueue, initializeSubAgentConfig, type SubAgentConfigurationError } from "./config.js";
+import { type FileMutationQueue, initializeSubAgentConfig } from "./config.js";
 import { CHILD_SESSIONS_DIRECTORY_NAME, DESCRIPTOR_ENTRY_TYPE } from "./constants.js";
 import type { SubAgentConfigV2, SubAgentDescriptorV1 } from "./domain.js";
 import { SubagentManager } from "./runtime.js";
@@ -157,4 +157,4 @@ export default async function subAgent(pi: ExtensionAPI): Promise<void> {
 	});
 }
 
-export type { SubAgentConfigurationError, SubAgentConfigV2 };
+export type { SubAgentConfigV2 };
