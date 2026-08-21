@@ -3,8 +3,9 @@
 为 Pi 提供模型可见的结构化任务列表。模型通过 `todo_write` 工具每次发送完整列表；每次成功写入都会把
 完整快照追加到当前 Pi session，后写覆盖先写。
 
-`todo:status` widget 在编辑器上方常驻显示当前计划；它跨 turn 保留，直到模型用 `todo_write({ todos: [] })`
-显式清空，或 session 被关闭。
+`todo:status` widget 在编辑器上方常驻显示当前计划；它跨 turn 保留，直到计划被清空或终结：模型可以用
+`todo_write({ todos: [] })` 显式清空；当一次写入的结果是非空的全部 `completed` 列表时，extension 视为计划完成，
+自动按空列表落盘并清除 widget，不依赖模型再发一次空数组。session 关闭同样会移除 widget。
 
 本 extension 不提供部分更新、回读工具、ID、取消状态、状态机、reminder 或自动续跑。
 
@@ -132,6 +133,12 @@ todo_write({ "todos": [] })
 
 清空会持久化 `todos: []`，并清除 widget。
 
+### 计划完成自动终结
+
+当一次写入非空且所有项都是 `completed` 时，extension 视为计划已完成：快照按 `todos: []` 落盘，widget 立即清除，
+工具结果返回 `All N todos completed. Todo list cleared.`。模型无需再发送空数组；旧版本写入的全 `completed`
+快照在 session 恢复时也会被隐藏。
+
 ### 校验
 
 - `content` trim 后必须非空。
@@ -146,7 +153,7 @@ todo_write({ "todos": [] })
 - `todo_write` 成功时显示最新列表。
 - turn 边界不会清空或隐藏列表。
 - session 恢复、fork 和 tree navigation 后显示目标 branch 的最后一条有效快照。
-- 空列表 `[]` 清空 widget。
+- 空列表 `[]` 清空 widget；非空但全部 `completed` 的写入同样视为终态并清空。
 
 TUI 最多显示 5 项，顺序为 `in_progress`、`pending`、`completed`，超出的项在 header 中显示 `+N`。RPC 模式
 通过 UI bridge 发送纯文本行；JSON 和 print 模式不调用 UI。
@@ -165,7 +172,7 @@ TUI 最多显示 5 项，顺序为 `in_progress`、`pending`、`completed`，超
 custom entry 不进入 LLM context。恢复时读取当前 conversation branch 上最后一条有效 version 2 快照；
 多个快照后写覆盖先写。
 
-- 最后一条有效 v2 快照会持续显示；后续 user message 不会隐式清空计划。
+- 最后一条有效 v2 快照会持续显示；后续 user message 不会隐式清空计划。唯一例外是终态：全部 `completed` 的列表在写入时就按空列表落盘，旧版本遗留的全 `completed` 快照在恢复时也会被隐藏。
 - fork 和 tree navigation 只读取目标 branch；其他 branch 的写入不会泄漏进来。
 - `Ctrl+D` 退出不是删除，session 恢复遵循上述规则。
 - 删除 Pi session 会一并删除 Todo 数据。Pi 可能先把 session 文件移入系统废纸篓。
@@ -176,7 +183,7 @@ custom entry 不进入 LLM context。恢复时读取当前 conversation branch �
 
 | 模式 | `todo_write` 工具 | session 持久化 | widget |
 | --- | --- | --- | --- |
-| TUI | 支持 | 支持 | 编辑器上方常驻，显式清空 |
+| TUI | 支持 | 支持 | 编辑器上方常驻，显式清空或计划终结 |
 | RPC | 支持 | 支持 | 通过 UI bridge；客户端可选择不显示 |
 | JSON | 支持 | 支持 | 不显示 |
 | print | 支持 | 支持 | 不显示 |

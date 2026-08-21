@@ -7,7 +7,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type FileMutationQueue, initializeTodoConfig, TodoConfigurationError, type TodoConfigV1 } from "./config.js";
 import { TODO_SNAPSHOT_ENTRY_TYPE } from "./constants.js";
-import { createTodoSnapshot, parseTodoSnapshot, type TodoItem } from "./domain.js";
+import { createTodoSnapshot, isFullyCompleted, parseTodoSnapshot, type TodoItem } from "./domain.js";
 import { createTodoToolDefinition } from "./tool.js";
 import { tryProjectTodoWidget } from "./widget.js";
 
@@ -54,7 +54,9 @@ function restoreVisibleTodos(context: ExtensionContext, state: TodoRuntimeState)
 		}
 	}
 
-	state.visibleTodos = latestValidTodos;
+	// A fully completed snapshot is the plan's terminal state; retire it on
+	// restore too so lists written before settling stay hidden after reload.
+	state.visibleTodos = latestValidTodos !== null && isFullyCompleted(latestValidTodos) ? null : latestValidTodos;
 	tryProjectTodoWidget(context, state.visibleTodos);
 
 	if (foundInvalidV2 && !state.warningShown) {

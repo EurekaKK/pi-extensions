@@ -240,18 +240,18 @@ describe("Todo v2 extension", () => {
 		});
 	});
 
-	it("uses last-write-wins and accepts an empty list as clear", async () => {
+	it("uses last-write-wins across successive writes", async () => {
 		const harness = new TodoHarness("tui", true, CONFIG_TRUE);
 		await harness.lifecycle("session_start");
 		await harness.invokeTodo({ todos: [{ content: "first", status: "pending" }] });
-		await harness.invokeTodo({ todos: [{ content: "second", status: "completed" }] });
+		await harness.invokeTodo({ todos: [{ content: "second", status: "in_progress" }] });
 
 		const last = harness.appendedEntries.at(-1);
 		expect(last).toEqual({
 			customType: TODO_SNAPSHOT_ENTRY_TYPE,
 			data: {
 				version: 2,
-				todos: [{ content: "second", status: "completed" }],
+				todos: [{ content: "second", status: "in_progress" }],
 			},
 		});
 
@@ -259,6 +259,53 @@ describe("Todo v2 extension", () => {
 		expect(cleared.isError).toBe(false);
 		expect(harness.appendedEntries.at(-1)?.data).toEqual({ version: 2, todos: [] });
 		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
+	});
+
+	it("retires a fully completed list instead of keeping it visible", async () => {
+		const harness = new TodoHarness("tui", true, CONFIG_TRUE);
+		await harness.lifecycle("session_start");
+
+		const result = await harness.invokeTodo({
+			todos: [
+				{ content: "investigate", status: "completed" },
+				{ content: "implement", status: "completed" },
+			],
+		});
+
+		expect(result.isError).toBe(false);
+		expect(text(result)).toBe("All 2 todos completed. Todo list cleared.");
+		expect(result.details).toEqual({
+			version: 1,
+			todos: [],
+			counts: { pending: 0, inProgress: 0, completed: 0 },
+		});
+		expect(harness.appendedEntries.at(-1)?.data).toEqual({ version: 2, todos: [] });
+		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
+	});
+
+	it("keeps a partially completed list visible", async () => {
+		const harness = new TodoHarness("tui", true, CONFIG_TRUE);
+		await harness.lifecycle("session_start");
+
+		const result = await harness.invokeTodo({
+			todos: [
+				{ content: "done work", status: "completed" },
+				{ content: "left work", status: "pending" },
+			],
+		});
+
+		expect(result.isError).toBe(false);
+		expect(text(result)).toBe("Updated todo list: 1 pending, 0 in progress, 1 completed.");
+		expect(harness.appendedEntries.at(-1)?.data).toEqual({
+			version: 2,
+			todos: [
+				{ content: "done work", status: "completed" },
+				{ content: "left work", status: "pending" },
+			],
+		});
+		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, expect.anything(), {
+			placement: "aboveEditor",
+		});
 	});
 
 	it("enforces allowParallelInProgress before writing anything", async () => {
@@ -349,6 +396,19 @@ describe("Todo v2 extension", () => {
 		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, expect.anything(), {
 			placement: "aboveEditor",
 		});
+	});
+
+	it("hides an all-completed snapshot on restore", async () => {
+		const harness = new TodoHarness("tui", true, CONFIG_TRUE);
+		const root = userEntry("u1", null);
+		const finished = customEntry("s1", "u1", {
+			version: 2,
+			todos: [{ content: "work", status: "completed" }],
+		});
+
+		harness.setBranch([root, finished]);
+		await harness.lifecycle("session_start");
+		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
 	});
 
 	it("ignores v1 data and warns once for malformed v2 data", async () => {

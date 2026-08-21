@@ -89,6 +89,14 @@ export function normalizeTodoItems(raw: readonly unknown[], allowParallelInProgr
 	return Object.freeze(todos);
 }
 
+/**
+ * A non-empty list whose every item is completed is the plan's terminal
+ * state: nothing remains to show or resume, so callers retire it.
+ */
+export function isFullyCompleted(todos: readonly TodoItem[]): boolean {
+	return todos.length > 0 && todos.every((todo) => todo.status === "completed");
+}
+
 export function createTodoSnapshot(todos: readonly TodoItem[]): TodoSnapshotV2 {
 	return Object.freeze({
 		version: TODO_SNAPSHOT_VERSION,
