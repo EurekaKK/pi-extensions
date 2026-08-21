@@ -2,9 +2,11 @@ import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-wor
 import { vi } from "vitest";
 
 /**
- * Minimal fake Pi host, shaped to move verbatim into a shared test-host
- * package later. One place casts to the real ExtensionAPI/ExtensionContext
- * types; test files stay cast-free and describe scenarios only.
+ * FakePiHost — one fake Pi host for every extension's tests.
+ *
+ * The real ExtensionAPI/ExtensionContext types are satisfied through a single
+ * cast inside this module; test files stay cast-free and describe scenarios
+ * only. When Pi's interface drifts, this is the one place to update.
  */
 
 type Handler = (event: Record<string, unknown>, context: ExtensionContext) => unknown | Promise<unknown>;
@@ -20,6 +22,7 @@ export interface CapturedTool {
 	readonly description?: string;
 	readonly parameters?: unknown;
 	readonly executionMode?: string;
+	readonly promptGuidelines?: readonly string[];
 	execute(
 		toolCallId: string,
 		parameters: never,
@@ -55,8 +58,12 @@ export class FakePiHost {
 		setStatus: vi.fn<(key: string, value: unknown) => void>(),
 		notify: vi.fn<(message: string, level?: string) => void>(),
 	};
+	/** When true, api.appendEntry throws before recording anything. */
 	failAppend = false;
+	/** When true, api.sendMessage throws before recording anything. */
 	failSend = false;
+	/** When true, context.sessionManager.getBranch throws. */
+	failBranchRead = false;
 
 	readonly api: ExtensionAPI;
 	readonly context: ExtensionContext;
@@ -115,7 +122,10 @@ export class FakePiHost {
 			},
 			sessionManager: {
 				getSessionId: () => this.#sessionId,
-				getBranch: () => [...this.#entries],
+				getBranch: () => {
+					if (this.failBranchRead) throw new Error("branch unavailable");
+					return [...this.#entries];
+				},
 			},
 		} as unknown as ExtensionContext;
 	}

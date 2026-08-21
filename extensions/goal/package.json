@@ -34,7 +34,8 @@
 		"@biomejs/biome": "^2.5.4",
 		"@types/node": "^22.20.1",
 		"typescript": "^7.0.2",
-		"vitest": "^4.1.10"
+		"vitest": "^4.1.10",
+		"test-host": "*"
 	},
 	"dependencies": {
 		"config-store": "*"

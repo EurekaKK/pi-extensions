@@ -1,8 +1,8 @@
+import { FakePiHost } from "test-host";
 import { describe, expect, it } from "vitest";
 import { GOAL_ROUND_ENTRY_TYPE, GOAL_ROUND_MESSAGE_TYPE } from "../src/constants.js";
 import { GoalDriver } from "../src/driver.js";
 import { GoalService } from "../src/service.js";
-import { FakePiHost } from "./fake-pi-host.js";
 
 interface DriverFixture {
 	readonly host: FakePiHost;
