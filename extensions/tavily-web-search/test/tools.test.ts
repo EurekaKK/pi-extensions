@@ -1,13 +1,12 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { FakePiHost } from "test-host";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONFIG } from "../src/config.js";
 import { loadTavilyWebSearch } from "../src/index.js";
-
-type Handler = (event: Record<string, unknown>, context: ExtensionContext) => unknown | Promise<unknown>;
 
 interface RegisteredTool {
 	readonly name: string;
@@ -20,40 +19,25 @@ interface RegisteredTool {
 }
 
 class ToolHarness {
-	readonly tools: RegisteredTool[] = [];
-	readonly notify = vi.fn();
-	readonly api: ExtensionAPI;
-	readonly context: ExtensionContext;
-	#handlers = new Map<string, Handler[]>();
+	readonly host = new FakePiHost({ mode: "tui", hasUI: true });
+	readonly context: ExtensionContext = this.host.context;
 
-	constructor() {
-		this.context = {
-			mode: "tui",
-			hasUI: true,
-			ui: { notify: this.notify },
-		} as unknown as ExtensionContext;
-		this.api = {
-			on: (event: string, handler: Handler) => {
-				const handlers = this.#handlers.get(event) ?? [];
-				handlers.push(handler);
-				this.#handlers.set(event, handlers);
-			},
-			registerTool: (tool: RegisteredTool) => {
-				this.tools.push(tool);
-			},
-		} as unknown as ExtensionAPI;
+	get api() {
+		return this.host.api;
 	}
 
 	tool(name: string): RegisteredTool {
-		const found = this.tools.find((tool) => tool.name === name);
+		const found = this.host.tools.find((tool) => tool.name === name);
 		if (found === undefined) throw new Error(`missing tool ${name}`);
-		return found;
+		return found as unknown as RegisteredTool;
+	}
+
+	get notify(): FakePiHost["ui"]["notify"] {
+		return this.host.ui.notify;
 	}
 
 	async sessionStart(): Promise<void> {
-		for (const handler of this.#handlers.get("session_start") ?? []) {
-			await handler({ type: "session_start" }, this.context);
-		}
+		await this.host.emit("session_start", { type: "session_start" });
 	}
 }
 
@@ -419,7 +403,7 @@ describe("tavily_search and tavily_extract", () => {
 			fetch: fetchMock,
 			readApiKey: () => undefined,
 		});
-		expect(harness.tools).toEqual([]);
+		expect(harness.host.tools).toEqual([]);
 		await harness.sessionStart();
 		expect(harness.notify).toHaveBeenCalled();
 		expect(fetchMock).not.toHaveBeenCalled();
@@ -439,7 +423,7 @@ describe("tavily_search and tavily_extract", () => {
 			fetch: fetchMock,
 			readApiKey: () => "tvly-test",
 		});
-		expect(harness.tools).toEqual([]);
+		expect(harness.host.tools).toEqual([]);
 		await harness.sessionStart();
 		expect(String(harness.notify.mock.calls[0]?.[0])).toMatch(/disabled/i);
 		expect(fetchMock).not.toHaveBeenCalled();

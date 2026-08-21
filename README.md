@@ -42,7 +42,9 @@ pi-extensions/
 
 本仓库的 extension 采用 npm 风格安装：先把 package 复制到 Pi agent 目录下的
 `~/.pi/agent/my-extensions/<name>/`，再把该副本登记进 Pi。Pi 对本地路径包只登记原路径、
-不做复制，因此必须先复制再登记，运行中的 Pi 才能与开发工作树解耦。
+不做复制，因此必须先复制再登记，运行中的 Pi 才能与开发工作树解耦；Pi 对本地安装也不运行
+`npm install`，所以脚本会把 extension 声明的仓库内部依赖（`packages/<dep>/`）一并 vendor 进副本的
+`node_modules/`（见 ADR-0034）。
 
 ```bash
 # 安装或更新（复制 + pi install），可一次传多个名字

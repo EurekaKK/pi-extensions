@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { TODO_SNAPSHOT_VERSION } from "../src/constants.js";
-import { countTodos, createTodoSnapshot, normalizeTodoItems, parseTodoSnapshot } from "../src/domain.js";
+import {
+	countTodos,
+	createTodoSnapshot,
+	isFullyCompleted,
+	normalizeTodoItems,
+	parseTodoSnapshot,
+} from "../src/domain.js";
 
 describe("Todo v2 domain", () => {
 	it("normalizes content, preserves order, and counts statuses", () => {
@@ -25,6 +31,24 @@ describe("Todo v2 domain", () => {
 
 	it("accepts an empty list", () => {
 		expect(normalizeTodoItems([], false)).toEqual([]);
+	});
+
+	it("detects the fully completed terminal state", () => {
+		expect(isFullyCompleted([{ content: "done", status: "completed" }])).toBe(true);
+		expect(
+			isFullyCompleted([
+				{ content: "a", status: "completed" },
+				{ content: "b", status: "completed" },
+			]),
+		).toBe(true);
+		expect(isFullyCompleted([])).toBe(false);
+		expect(
+			isFullyCompleted([
+				{ content: "done", status: "completed" },
+				{ content: "left", status: "pending" },
+			]),
+		).toBe(false);
+		expect(isFullyCompleted([{ content: "working", status: "in_progress" }])).toBe(false);
 	});
 
 	it.each([

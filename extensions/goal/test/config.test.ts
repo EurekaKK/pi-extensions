@@ -2,14 +2,9 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { StrictConfigError } from "config-store";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-	DEFAULT_CONFIG,
-	GoalConfigurationError,
-	getGoalConfigPath,
-	initializeGoalConfig,
-	validateGoalConfig,
-} from "../src/config.js";
+import { DEFAULT_CONFIG, getGoalConfigPath, initializeGoalConfig, validateGoalConfig } from "../src/config.js";
 
 describe("goal v2 config", () => {
 	let agentDir: string;
@@ -34,10 +29,10 @@ describe("goal v2 config", () => {
 	it("rejects invalid limits", async () => {
 		expect(() =>
 			validateGoalConfig({ version: 1, defaultMaxGoalRounds: 0, blockedAfterConsecutiveRounds: 3 }, "test.json"),
-		).toThrow(GoalConfigurationError);
+		).toThrow(StrictConfigError);
 		expect(() =>
 			validateGoalConfig({ version: 1, defaultMaxGoalRounds: 256, blockedAfterConsecutiveRounds: 0 }, "test.json"),
-		).toThrow(GoalConfigurationError);
+		).toThrow(StrictConfigError);
 	});
 
 	it("rejects unknown fields and old versions", async () => {
@@ -48,8 +43,6 @@ describe("goal v2 config", () => {
 			'{"version":0,"defaultMaxGoalRounds":1,"blockedAfterConsecutiveRounds":1}',
 			{ mode: 0o600 },
 		);
-		await expect(initializeGoalConfig({ agentDir, withFileMutationQueue })).rejects.toBeInstanceOf(
-			GoalConfigurationError,
-		);
+		await expect(initializeGoalConfig({ agentDir, withFileMutationQueue })).rejects.toBeInstanceOf(StrictConfigError);
 	});
 });

@@ -93,5 +93,5 @@ export default async function contextManagement(pi: ExtensionAPI): Promise<void>
 	});
 }
 
-export { ContextManagementConfigurationError, DEFAULT_CONFIG } from "./config.js";
+export { DEFAULT_CONFIG } from "./config.js";
 export type { ContextManagementConfigV1 };

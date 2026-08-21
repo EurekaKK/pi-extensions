@@ -2,13 +2,13 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { StrictConfigError } from "config-store";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	DEFAULT_CONFIG,
 	getTodoConfigPath,
 	initializeTodoConfig,
 	MAX_CONFIG_BYTES,
-	TodoConfigurationError,
 	validateTodoConfig,
 } from "../src/config.js";
 
@@ -61,9 +61,7 @@ describe("Todo config", () => {
 		await mkdir(configDir, { recursive: true, mode: 0o700 });
 		await writeFile(getTodoConfigPath(agentDir), contents, { mode: 0o600 });
 
-		await expect(initializeTodoConfig({ agentDir, withFileMutationQueue })).rejects.toBeInstanceOf(
-			TodoConfigurationError,
-		);
+		await expect(initializeTodoConfig({ agentDir, withFileMutationQueue })).rejects.toBeInstanceOf(StrictConfigError);
 	});
 
 	it("rejects files larger than the configured limit", async () => {
@@ -82,7 +80,7 @@ describe("Todo config", () => {
 			allowParallelInProgress: true,
 		});
 		expect(() => validateTodoConfig({ version: 1, allowParallelInProgress: false, x: 1 }, "test.json")).toThrow(
-			TodoConfigurationError,
+			StrictConfigError,
 		);
 	});
 });

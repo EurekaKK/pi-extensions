@@ -1,11 +1,19 @@
-import { constants as fsConstants } from "node:fs";
-import { chmod, lstat, mkdir, open, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import {
+	CONFIG_DIRECTORY_MODE,
+	CONFIG_FILE_MODE,
+	type FileMutationQueue,
+	hasExactKeys,
+	initializeStrictConfig,
+	isRecord,
+	MAX_CONFIG_BYTES,
+	StrictConfigError,
+	type StrictConfigResult,
+} from "config-store";
 import { CONFIG_DIRECTORY_NAME, CONFIG_FILE_NAME, CONFIG_VERSION, PRUNE_MARKER } from "./constants.js";
 
-export const MAX_CONFIG_BYTES = 64 * 1024;
-export const CONFIG_DIRECTORY_MODE = 0o700;
-export const CONFIG_FILE_MODE = 0o600;
+export type { FileMutationQueue };
+export { CONFIG_DIRECTORY_MODE, CONFIG_FILE_MODE, MAX_CONFIG_BYTES };
 
 export interface PruneConfigV1 {
 	readonly thresholdChars: number;
@@ -28,21 +36,12 @@ export interface ContextManagementConfigV1 {
 	readonly spill: SpillConfigV1;
 }
 
-export type FileMutationQueue = <T>(filePath: string, mutation: () => Promise<T>) => Promise<T>;
-
 export interface InitializeContextManagementConfigOptions {
 	readonly agentDir: string;
 	readonly withFileMutationQueue: FileMutationQueue;
 }
 
-export interface InitializedContextManagementConfig {
-	readonly configDir: string;
-	readonly configPath: string;
-	readonly config: ContextManagementConfigV1;
-	readonly created: boolean;
-}
-
-const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
+export type InitializedContextManagementConfig = StrictConfigResult<ContextManagementConfigV1>;
 
 export const DEFAULT_CONFIG: ContextManagementConfigV1 = Object.freeze({
 	version: CONFIG_VERSION,
@@ -63,43 +62,8 @@ export const DEFAULT_CONFIG: ContextManagementConfigV1 = Object.freeze({
 
 const DEFAULT_CONFIG_TEXT = `${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`;
 
-export class ContextManagementConfigurationError extends Error {
-	readonly configPath: string;
-
-	constructor(configPath: string, reason: string) {
-		super(`${configPath}: ${reason}`);
-		this.name = "ContextManagementConfigurationError";
-		this.configPath = configPath;
-	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-	const prototype = Object.getPrototypeOf(value);
-	return prototype === Object.prototype || prototype === null;
-}
-
-function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
-	const actual = Object.keys(value).sort();
-	const keys = [...expected].sort();
-	return (
-		Object.getOwnPropertySymbols(value).length === 0 &&
-		actual.length === keys.length &&
-		actual.every((key, index) => key === keys[index])
-	);
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-	return error instanceof Error && "code" in error;
-}
-
-function describeIoError(error: unknown): string {
-	if (isNodeError(error) && typeof error.code === "string") return `filesystem error ${error.code}`;
-	return "filesystem operation failed";
-}
-
 function fail(configPath: string, reason: string): never {
-	throw new ContextManagementConfigurationError(configPath, reason);
+	throw new StrictConfigError(configPath, reason);
 }
 
 function assertRatio(configPath: string, field: string, value: unknown): asserts value is number {
@@ -188,62 +152,6 @@ export function validateContextManagementConfig(value: unknown, configPath: stri
 	});
 }
 
-async function readStrictJson(configPath: string): Promise<unknown> {
-	let before: Awaited<ReturnType<typeof lstat>>;
-	try {
-		before = await lstat(configPath);
-	} catch (error) {
-		fail(configPath, `cannot inspect config (${describeIoError(error)})`);
-	}
-	if (!before.isFile()) fail(configPath, "config path must be a regular file");
-	if (before.size > MAX_CONFIG_BYTES) fail(configPath, `file exceeds ${MAX_CONFIG_BYTES} UTF-8 bytes`);
-
-	let bytes: Uint8Array;
-	try {
-		bytes = await readFile(configPath);
-	} catch (error) {
-		fail(configPath, `cannot read config (${describeIoError(error)})`);
-	}
-	if (bytes.byteLength > MAX_CONFIG_BYTES) fail(configPath, `file exceeds ${MAX_CONFIG_BYTES} UTF-8 bytes`);
-
-	let after: Awaited<ReturnType<typeof lstat>>;
-	try {
-		after = await lstat(configPath);
-	} catch (error) {
-		fail(configPath, `cannot re-check config (${describeIoError(error)})`);
-	}
-	if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size) {
-		fail(configPath, "config changed while it was being read");
-	}
-
-	let text: string;
-	try {
-		text = TEXT_DECODER.decode(bytes);
-	} catch {
-		fail(configPath, "file is not valid UTF-8");
-	}
-	try {
-		return JSON.parse(text) as unknown;
-	} catch {
-		return fail(configPath, "file is not strict JSON");
-	}
-}
-
-async function createDefaultConfig(configPath: string): Promise<boolean> {
-	let handle: Awaited<ReturnType<typeof open>> | undefined;
-	try {
-		handle = await open(configPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, CONFIG_FILE_MODE);
-		await handle.writeFile(DEFAULT_CONFIG_TEXT, "utf8");
-		await handle.sync();
-		return true;
-	} catch (error) {
-		if (isNodeError(error) && error.code === "EEXIST") return false;
-		return fail(configPath, `cannot create default config (${describeIoError(error)})`);
-	} finally {
-		await handle?.close();
-	}
-}
-
 export function getContextManagementConfigPath(agentDir: string): string {
 	return join(agentDir, CONFIG_DIRECTORY_NAME, CONFIG_FILE_NAME);
 }
@@ -251,18 +159,12 @@ export function getContextManagementConfigPath(agentDir: string): string {
 export async function initializeContextManagementConfig(
 	options: InitializeContextManagementConfigOptions,
 ): Promise<InitializedContextManagementConfig> {
-	const configDir = join(options.agentDir, CONFIG_DIRECTORY_NAME);
-	const configPath = join(configDir, CONFIG_FILE_NAME);
-	return options.withFileMutationQueue(configPath, async () => {
-		try {
-			await mkdir(configDir, { recursive: true, mode: CONFIG_DIRECTORY_MODE });
-			await chmod(configDir, CONFIG_DIRECTORY_MODE);
-		} catch (error) {
-			fail(configPath, `cannot prepare config directory (${describeIoError(error)})`);
-		}
-		const created = await createDefaultConfig(configPath);
-		const parsed = await readStrictJson(configPath);
-		const config = validateContextManagementConfig(parsed, configPath);
-		return Object.freeze({ configDir, configPath, config, created });
+	return initializeStrictConfig({
+		agentDir: options.agentDir,
+		directoryName: CONFIG_DIRECTORY_NAME,
+		fileName: CONFIG_FILE_NAME,
+		defaultText: DEFAULT_CONFIG_TEXT,
+		validate: validateContextManagementConfig,
+		withFileMutationQueue: options.withFileMutationQueue,
 	});
 }

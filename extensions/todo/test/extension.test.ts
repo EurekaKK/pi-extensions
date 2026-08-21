@@ -1,28 +1,11 @@
 import { type Tool, type ToolCall, validateToolArguments } from "@earendil-works/pi-ai";
-import type { AgentToolResult, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import type { AgentToolResult, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { type CapturedTool, FakePiHost } from "test-host";
+import { describe, expect, it } from "vitest";
 import type { TodoConfigV1 } from "../src/config.js";
 import { TODO_SNAPSHOT_ENTRY_TYPE, TODO_TOOL_NAME, TODO_WIDGET_KEY } from "../src/constants.js";
 import { registerTodoExtension } from "../src/index.js";
 import type { TodoWriteDetailsV1 } from "../src/tool.js";
-
-type Handler = (event: Record<string, unknown>, context: ExtensionContext) => unknown | Promise<unknown>;
-
-interface CapturedTool {
-	readonly name: string;
-	readonly label: string;
-	readonly description: string;
-	readonly promptGuidelines?: readonly string[];
-	readonly parameters: unknown;
-	readonly executionMode?: string;
-	execute(
-		toolCallId: string,
-		parameters: unknown,
-		signal: AbortSignal | undefined,
-		onUpdate: undefined,
-		context: ExtensionContext,
-	): Promise<AgentToolResult<TodoWriteDetailsV1>>;
-}
 
 interface AppendedEntry {
 	readonly customType: string;
@@ -40,74 +23,45 @@ interface ToolMessage {
 }
 
 class TodoHarness {
-	readonly registeredTools: CapturedTool[] = [];
-	readonly appendedEntries: AppendedEntry[] = [];
-	readonly setWidget = vi.fn();
-	readonly notify = vi.fn();
-	readonly api: ExtensionAPI;
+	readonly host: FakePiHost;
 	readonly context: ExtensionContext;
 	readonly config: TodoConfigV1;
-	failAppend = false;
-	failBranchRead = false;
-	#branch: SessionEntry[] = [];
-	#handlers = new Map<string, Handler[]>();
-	#nextId = 1;
 
 	constructor(mode: ExtensionContext["mode"] = "tui", hasUI = true, config?: TodoConfigV1) {
 		this.config = config ?? Object.freeze({ version: 1, allowParallelInProgress: false });
-		this.context = {
-			mode,
-			hasUI,
-			ui: {
-				setWidget: this.setWidget,
-				notify: this.notify,
-			},
-			sessionManager: {
-				getBranch: () => {
-					if (this.failBranchRead) throw new Error("branch unavailable");
-					return [...this.#branch];
-				},
-			},
-		} as unknown as ExtensionContext;
-		this.api = {
-			on: (event: string, handler: Handler) => {
-				const handlers = this.#handlers.get(event) ?? [];
-				handlers.push(handler);
-				this.#handlers.set(event, handlers);
-			},
-			registerTool: (tool: CapturedTool) => {
-				this.registeredTools.push(tool);
-			},
-			appendEntry: (customType: string, data: unknown) => {
-				const parent = this.#branch.at(-1);
-				const entry: SessionEntry = {
-					type: "custom",
-					id: `entry-${this.#nextId++}`,
-					parentId: parent?.id ?? null,
-					timestamp: new Date().toISOString(),
-					customType,
-					data,
-				};
-				this.#branch.push(entry);
-				if (this.failAppend) throw new Error("disk unavailable");
-				this.appendedEntries.push({ customType, data });
-			},
-		} as unknown as ExtensionAPI;
-		registerTodoExtension(this.api, this.config);
+		this.host = new FakePiHost({ mode, hasUI });
+		this.context = this.host.context;
+		registerTodoExtension(this.host.api, this.config);
 	}
 
 	get tool(): CapturedTool {
-		const tool = this.registeredTools[0];
+		const tool = this.host.tools[0];
 		if (tool === undefined) throw new Error("Todo tool was not registered.");
 		return tool;
 	}
 
-	setBranch(entries: readonly SessionEntry[]): void {
-		this.#branch = [...entries];
+	get appendedEntries(): readonly AppendedEntry[] {
+		return this.host.appendedEntries;
 	}
 
-	branch(): readonly SessionEntry[] {
-		return [...this.#branch];
+	get setWidget(): FakePiHost["ui"]["setWidget"] {
+		return this.host.ui.setWidget;
+	}
+
+	get notify(): FakePiHost["ui"]["notify"] {
+		return this.host.ui.notify;
+	}
+
+	get failAppend(): boolean {
+		return this.host.failAppend;
+	}
+
+	set failAppend(value: boolean) {
+		this.host.failAppend = value;
+	}
+
+	setBranch(entries: readonly SessionEntry[]): void {
+		this.host.setBranch(entries);
 	}
 
 	async lifecycle(event: "session_start" | "session_tree" | "session_shutdown"): Promise<void> {
@@ -119,12 +73,13 @@ class TodoHarness {
 	}
 
 	async emit(event: string, payload: Record<string, unknown>): Promise<void> {
-		for (const handler of this.#handlers.get(event) ?? []) {
-			await handler(payload, this.context);
-		}
+		await this.host.emit(event, payload);
 	}
 
-	async invokeTodo(parameters: unknown, toolCallId = `todo-${this.#nextId++}`): Promise<ToolMessage> {
+	async invokeTodo(
+		parameters: unknown,
+		toolCallId = `todo-${this.host.appendedEntries.length + 1}`,
+	): Promise<ToolMessage> {
 		let result: AgentToolResult<TodoWriteDetailsV1>;
 		let isError = false;
 		try {
@@ -141,7 +96,13 @@ class TodoHarness {
 					arguments: parameters,
 				} as ToolCall,
 			);
-			result = await this.tool.execute(toolCallId, validatedParameters, undefined, undefined, this.context);
+			result = (await this.tool.execute(
+				toolCallId,
+				validatedParameters as never,
+				undefined,
+				undefined,
+				this.context,
+			)) as AgentToolResult<TodoWriteDetailsV1>;
 		} catch (error) {
 			isError = true;
 			result = {
@@ -187,7 +148,7 @@ describe("Todo v2 extension", () => {
 	it("registers one parallel todo_write tool with a policy-driven description", () => {
 		const harness = new TodoHarness("tui", true, CONFIG_FALSE);
 
-		expect(harness.registeredTools).toHaveLength(1);
+		expect(harness.host.tools).toHaveLength(1);
 		expect(harness.tool.name).toBe(TODO_TOOL_NAME);
 		expect(harness.tool.label).toBe("Todo");
 		expect(harness.tool.executionMode).toBe("parallel");
@@ -240,18 +201,18 @@ describe("Todo v2 extension", () => {
 		});
 	});
 
-	it("uses last-write-wins and accepts an empty list as clear", async () => {
+	it("uses last-write-wins across successive writes", async () => {
 		const harness = new TodoHarness("tui", true, CONFIG_TRUE);
 		await harness.lifecycle("session_start");
 		await harness.invokeTodo({ todos: [{ content: "first", status: "pending" }] });
-		await harness.invokeTodo({ todos: [{ content: "second", status: "completed" }] });
+		await harness.invokeTodo({ todos: [{ content: "second", status: "in_progress" }] });
 
 		const last = harness.appendedEntries.at(-1);
 		expect(last).toEqual({
 			customType: TODO_SNAPSHOT_ENTRY_TYPE,
 			data: {
 				version: 2,
-				todos: [{ content: "second", status: "completed" }],
+				todos: [{ content: "second", status: "in_progress" }],
 			},
 		});
 
@@ -259,6 +220,53 @@ describe("Todo v2 extension", () => {
 		expect(cleared.isError).toBe(false);
 		expect(harness.appendedEntries.at(-1)?.data).toEqual({ version: 2, todos: [] });
 		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
+	});
+
+	it("retires a fully completed list instead of keeping it visible", async () => {
+		const harness = new TodoHarness("tui", true, CONFIG_TRUE);
+		await harness.lifecycle("session_start");
+
+		const result = await harness.invokeTodo({
+			todos: [
+				{ content: "investigate", status: "completed" },
+				{ content: "implement", status: "completed" },
+			],
+		});
+
+		expect(result.isError).toBe(false);
+		expect(text(result)).toBe("All 2 todos completed. Todo list cleared.");
+		expect(result.details).toEqual({
+			version: 1,
+			todos: [],
+			counts: { pending: 0, inProgress: 0, completed: 0 },
+		});
+		expect(harness.appendedEntries.at(-1)?.data).toEqual({ version: 2, todos: [] });
+		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
+	});
+
+	it("keeps a partially completed list visible", async () => {
+		const harness = new TodoHarness("tui", true, CONFIG_TRUE);
+		await harness.lifecycle("session_start");
+
+		const result = await harness.invokeTodo({
+			todos: [
+				{ content: "done work", status: "completed" },
+				{ content: "left work", status: "pending" },
+			],
+		});
+
+		expect(result.isError).toBe(false);
+		expect(text(result)).toBe("Updated todo list: 1 pending, 0 in progress, 1 completed.");
+		expect(harness.appendedEntries.at(-1)?.data).toEqual({
+			version: 2,
+			todos: [
+				{ content: "done work", status: "completed" },
+				{ content: "left work", status: "pending" },
+			],
+		});
+		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, expect.anything(), {
+			placement: "aboveEditor",
+		});
 	});
 
 	it("enforces allowParallelInProgress before writing anything", async () => {
@@ -349,6 +357,19 @@ describe("Todo v2 extension", () => {
 		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, expect.anything(), {
 			placement: "aboveEditor",
 		});
+	});
+
+	it("hides an all-completed snapshot on restore", async () => {
+		const harness = new TodoHarness("tui", true, CONFIG_TRUE);
+		const root = userEntry("u1", null);
+		const finished = customEntry("s1", "u1", {
+			version: 2,
+			todos: [{ content: "work", status: "completed" }],
+		});
+
+		harness.setBranch([root, finished]);
+		await harness.lifecycle("session_start");
+		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
 	});
 
 	it("ignores v1 data and warns once for malformed v2 data", async () => {

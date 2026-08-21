@@ -1,82 +1,164 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { FakePiHost } from "test-host";
 import { describe, expect, it } from "vitest";
 import { GOAL_ROUND_ENTRY_TYPE, GOAL_ROUND_MESSAGE_TYPE } from "../src/constants.js";
 import { GoalDriver } from "../src/driver.js";
 import { GoalService } from "../src/service.js";
 
-class Harness {
-	readonly entries: Array<{ type: string; customType?: string; data?: unknown }> = [];
-	readonly sent: Array<Record<string, unknown>> = [];
+interface DriverFixture {
+	readonly host: FakePiHost;
 	readonly service: GoalService;
 	readonly driver: GoalDriver;
-	failSend = false;
-
-	constructor(maxRounds = 256) {
-		const pi = {
-			appendEntry: (customType: string, data: unknown) => {
-				this.entries.push({ type: "custom", customType, data });
-			},
-			sendMessage: (message: Record<string, unknown>, options?: Record<string, unknown>) => {
-				if (this.failSend) throw new Error("send failed");
-				this.sent.push({ message, options });
-			},
-		} as unknown as ExtensionAPI;
-		this.service = new GoalService(pi, maxRounds, () => this.entries.length + 10);
-		this.driver = new GoalDriver(pi, this.service);
-	}
-
-	context() {
-		const entries = this.entries;
-		return {
-			mode: "tui",
-			hasUI: true,
-			sessionManager: { getSessionId: () => "s", getBranch: () => entries },
-		} as unknown as ExtensionContext;
-	}
+	settledCount(): number;
 }
 
-describe("GoalRoundDriver", () => {
-	it("admits a round and sends a goal_round message", async () => {
-		const h = new Harness();
-		const goal = h.service.create(h.context(), "ship");
-		await h.driver.maybeDrive(h.context());
+function makeDriver(maxRounds = 256): DriverFixture {
+	const host = new FakePiHost();
+	let settled = 0;
+	const service = new GoalService(host.api, maxRounds, () => 10);
+	const driver = new GoalDriver(host.api, service, {
+		onSettled: () => {
+			settled += 1;
+		},
+	});
+	return { host, service, driver, settledCount: () => settled };
+}
 
-		expect(h.entries.some((entry) => entry.customType === GOAL_ROUND_ENTRY_TYPE)).toBe(true);
-		expect(h.sent).toHaveLength(1);
-		const first = h.sent[0];
-		expect(first).toBeDefined();
+describe("Goal Round Driver", () => {
+	it("admits a round and sends a goal_round message when a run settles", async () => {
+		const f = makeDriver();
+		f.service.create(f.host.context, "ship");
+
+		await f.host.emit("agent_settled", { type: "agent_settled" });
+
+		expect(f.host.appendedEntries.some((entry) => entry.customType === GOAL_ROUND_ENTRY_TYPE)).toBe(true);
+		expect(f.host.sentMessages).toHaveLength(1);
+		const first = f.host.sentMessages[0];
 		if (first === undefined) throw new Error("missing sent message");
 		expect((first.message as { customType: string }).customType).toBe(GOAL_ROUND_MESSAGE_TYPE);
-		expect(h.service.get(h.context())?.roundsStarted).toBe(1);
-		expect(goal.phase).toBe("active");
+		expect(first?.options).toMatchObject({ triggerTurn: true });
+		expect(f.service.get(f.host.context)?.roundsStarted).toBe(1);
+		expect(f.settledCount()).toBe(1);
 	});
 
 	it("blocks round-limit when the cap is exhausted", async () => {
-		const h = new Harness(1);
-		h.service.create(h.context(), "ship");
-		await h.driver.maybeDrive(h.context());
-		await h.driver.maybeDrive(h.context());
-		const goal = h.service.get(h.context());
+		const f = makeDriver(1);
+		f.service.create(f.host.context, "ship");
+
+		await f.host.emit("agent_settled", { type: "agent_settled" });
+		await f.host.emit("agent_settled", { type: "agent_settled" });
+
+		const goal = f.service.get(f.host.context);
 		expect(goal?.phase).toBe("blocked");
 		expect(goal?.blockedReason?.code).toBe("round-limit");
 	});
 
-	it("blocks queue-failed when sendMessage throws", async () => {
-		const h = new Harness();
-		h.service.create(h.context(), "ship");
-		h.failSend = true;
-		await h.driver.maybeDrive(h.context());
-		const goal = h.service.get(h.context());
+	it("blocks queue-failed when sending the round message throws", async () => {
+		const f = makeDriver();
+		f.service.create(f.host.context, "ship");
+		f.host.failSend = true;
+
+		await f.host.emit("agent_settled", { type: "agent_settled" });
+
+		const goal = f.service.get(f.host.context);
 		expect(goal?.phase).toBe("blocked");
 		expect(goal?.blockedReason?.code).toBe("queue-failed");
 	});
 
-	it("does not drive a disarmed active goal", async () => {
-		const h = new Harness();
-		h.service.create(h.context(), "ship");
-		h.service.disarm("s");
-		await h.driver.maybeDrive(h.context());
-		expect(h.sent).toHaveLength(0);
-		expect(h.service.get(h.context())?.roundsStarted).toBe(0);
+	it("does not drive a disarmed active goal but still reports settlement", async () => {
+		const f = makeDriver();
+		f.service.create(f.host.context, "ship");
+		f.service.disarm("session-1");
+
+		await f.host.emit("agent_settled", { type: "agent_settled" });
+
+		expect(f.host.sentMessages).toHaveLength(0);
+		expect(f.service.get(f.host.context)?.roundsStarted).toBe(0);
+		expect(f.settledCount()).toBe(1);
+	});
+
+	it("grants direct-human authority to interactive and rpc inputs", async () => {
+		const f = makeDriver();
+
+		await f.host.emit("input", { source: "interactive" });
+		expect(f.driver.authority(f.host.context)).toEqual({ kind: "direct-human" });
+
+		await f.host.emit("input", { source: "rpc" });
+		expect(f.driver.authority(f.host.context)).toEqual({ kind: "direct-human" });
+	});
+
+	it("ignores inputs from other sources", async () => {
+		const f = makeDriver();
+
+		await f.host.emit("input", { source: "cli" });
+
+		expect(() => f.driver.authority(f.host.context)).toThrowError(/require a direct human turn/);
+	});
+
+	it("recognizes a queued goal round on its way back and grants goal-round authority", async () => {
+		const f = makeDriver();
+		f.service.create(f.host.context, "ship");
+
+		await f.host.emit("agent_settled", { type: "agent_settled" });
+		await f.host.emit("message_start", {
+			type: "message_start",
+			message: {
+				role: "custom",
+				customType: GOAL_ROUND_MESSAGE_TYPE,
+				content: "<goal_round> continuation",
+				timestamp: 1,
+			},
+		});
+
+		const authority = f.driver.authority(f.host.context);
+		expect(authority).toMatchObject({ kind: "goal-round" });
+		if (authority.kind === "goal-round") expect(authority.goal.roundsStarted).toBe(1);
+	});
+
+	it("returns authority to the human after an ordinary message", async () => {
+		const f = makeDriver();
+		f.service.create(f.host.context, "ship");
+		await f.host.emit("agent_settled", { type: "agent_settled" });
+		await f.host.emit("message_start", {
+			message: { role: "custom", customType: GOAL_ROUND_MESSAGE_TYPE, content: "<goal_round> continuation" },
+		});
+
+		await f.host.emit("message_start", { message: { role: "user", content: "stop, I will take over" } });
+
+		expect(f.driver.authority(f.host.context)).toEqual({ kind: "direct-human" });
+	});
+
+	it("denies authority when neither a human turn nor the current round is active", async () => {
+		const f = makeDriver();
+		f.service.create(f.host.context, "ship");
+
+		expect(() => f.driver.authority(f.host.context)).toThrowError(/require a direct human turn/);
+	});
+
+	it("resets turn state on session boundaries", async () => {
+		const f = makeDriver();
+		f.service.create(f.host.context, "ship");
+		await f.host.emit("agent_settled", { type: "agent_settled" });
+		await f.host.emit("message_start", {
+			message: { role: "custom", customType: GOAL_ROUND_MESSAGE_TYPE, content: "<goal_round> continuation" },
+		});
+		expect(f.driver.authority(f.host.context)).toMatchObject({ kind: "goal-round" });
+
+		await f.host.emit("session_start", { type: "session_start" });
+
+		expect(() => f.driver.authority(f.host.context)).toThrowError(/require a direct human turn/);
+	});
+
+	it("disarms the goal when a run ends truncated or errored", async () => {
+		const f = makeDriver();
+		f.service.create(f.host.context, "ship");
+
+		await f.host.emit("agent_end", {
+			type: "agent_end",
+			messages: [{ role: "assistant", stopReason: "length", content: [], timestamp: 1 }],
+		});
+		await f.host.emit("agent_settled", { type: "agent_settled" });
+
+		expect(f.service.activation("session-1")).toBe("disarmed");
+		expect(f.host.sentMessages).toHaveLength(0);
 	});
 });

@@ -3,7 +3,9 @@ import { type AgentToolResult, defineTool, type ExtensionContext } from "@earend
 import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { TODO_TOOL_NAME } from "./constants.js";
-import { countTodos, normalizeTodoItems, type TodoCounts, type TodoItem } from "./domain.js";
+import { countTodos, isFullyCompleted, normalizeTodoItems, type TodoCounts, type TodoItem } from "./domain.js";
+
+const EMPTY_TODOS: readonly TodoItem[] = Object.freeze([]);
 
 const DESCRIPTION_HEAD =
 	"Record and update a structured task list for the current work. Send the ENTIRE " +
@@ -24,7 +26,9 @@ const DESCRIPTION_SINGLE =
 const DESCRIPTION_TAIL =
 	"Mark a todo " +
 	"`completed` the moment it is done (do not batch completions), and allow no " +
-	"`in_progress` item only once all work is complete. Skip the list for trivial " +
+	"`in_progress` item only once all work is complete. A write containing only " +
+	"`completed` items finishes the plan: it is stored as empty and the widget " +
+	"clears, so never send a follow-up empty list. Skip the list for trivial " +
 	"single-step tasks. Statuses: `pending` (not started), `in_progress` (being " +
 	"worked on now), `completed` (finished).";
 
@@ -67,6 +71,10 @@ export function formatTodoResultText(counts: TodoCounts): string {
 	return `Updated todo list: ${counts.pending} pending, ${counts.inProgress} in progress, ${counts.completed} completed.`;
 }
 
+export function formatTodoSettledText(count: number): string {
+	return `All ${count} todo${count === 1 ? "" : "s"} completed. Todo list cleared.`;
+}
+
 export function createTodoToolDefinition(runtime: TodoToolRuntime) {
 	return defineTool({
 		name: TODO_TOOL_NAME,
@@ -77,12 +85,22 @@ export function createTodoToolDefinition(runtime: TodoToolRuntime) {
 
 		execute(_toolCallId, parameters, signal, _onUpdate, context) {
 			if (signal?.aborted) throw new Error("Operation aborted");
-			const todos = normalizeTodoItems(parameters.todos, runtime.allowParallelInProgress);
+			const submitted = normalizeTodoItems(parameters.todos, runtime.allowParallelInProgress);
+			const settled = isFullyCompleted(submitted);
+			// A fully completed list retires the plan: persist and project the
+			// empty state so the widget clears without relying on the model to
+			// send a follow-up empty-list call.
+			const todos = settled ? EMPTY_TODOS : submitted;
 			runtime.persist(todos);
 			runtime.show(todos, context);
 			const counts = countTodos(todos);
 			return Promise.resolve({
-				content: [{ type: "text" as const, text: formatTodoResultText(counts) }],
+				content: [
+					{
+						type: "text" as const,
+						text: settled ? formatTodoSettledText(submitted.length) : formatTodoResultText(counts),
+					},
+				],
 				details: {
 					version: 1,
 					todos: [...todos],

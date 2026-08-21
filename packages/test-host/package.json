@@ -1,5 +1,5 @@
 {
-	"name": "sub-agent",
+	"name": "test-host",
 	"version": "0.1.0",
 	"private": true,
 	"type": "module",
@@ -7,36 +7,20 @@
 	"engines": {
 		"node": ">=22.19.0"
 	},
-	"keywords": [
-		"pi-package"
-	],
-	"files": [
-		"index.ts",
-		"src/**/*.ts",
-		"README.md"
-	],
+	"exports": {
+		".": "./src/index.ts"
+	},
 	"scripts": {
 		"check": "biome check . && tsc --noEmit",
 		"test": "vitest run"
 	},
-	"pi": {
-		"extensions": [
-			"./index.ts"
-		]
-	},
 	"peerDependencies": {
-		"@earendil-works/pi-ai": "*",
-		"@earendil-works/pi-coding-agent": "*",
-		"@earendil-works/pi-tui": "*",
-		"typebox": "*"
+		"@earendil-works/pi-coding-agent": "*"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.4",
 		"@types/node": "^22.20.1",
 		"typescript": "^7.0.2",
 		"vitest": "^4.1.10"
-	},
-	"dependencies": {
-		"config-store": "*"
 	}
 }
