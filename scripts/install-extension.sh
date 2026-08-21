@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # 以 npm 风格安装本仓库的 Pi extension：
 #   1. 把 extensions/<name>/ 复制到 ~/.pi/agent/my-extensions/<name>/（精确镜像，排除 node_modules 等本机文件）
-#   2. 对副本执行 pi install
+#   2. 把该 package 声明的本仓库内部依赖（packages/<dep>/）vendor 进副本的 node_modules/<dep>/
+#      —— Pi 对本地路径包只登记不复制、不运行 npm install，跨包依赖必须随副本携带才能解析
+#   3. 对副本执行 pi install
 #
-# Pi 对本地路径包只登记不复制，因此必须先复制再登记，运行中的 Pi 才与开发工作树解耦。
 # 重复执行即为更新；更新后重启 Pi 或在会话内 /reload 生效。
 #
 # 用法: scripts/install-extension.sh <extension-name>...
@@ -22,6 +23,18 @@ usage() {
 command -v pi >/dev/null 2>&1 || { echo "error: pi not found in PATH" >&2; exit 1; }
 command -v rsync >/dev/null 2>&1 || { echo "error: rsync not found in PATH" >&2; exit 1; }
 
+# 列出 package.json 中指向本仓库 packages/ 的 dependencies 名称
+list_workspace_deps() {
+	node -e '
+		const fs = require("node:fs");
+		const path = require("node:path");
+		const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+		for (const name of Object.keys(pkg.dependencies ?? {})) {
+			if (fs.existsSync(path.join(process.argv[2], name, "package.json"))) process.stdout.write(`${name}\n`);
+		}
+	' "$1" "$REPO_ROOT/packages"
+}
+
 for name in "$@"; do
 	src="$REPO_ROOT/extensions/$name"
 	dest="$DEST_PARENT/$name"
@@ -34,6 +47,15 @@ for name in "$@"; do
 		--exclude 'node_modules/' \
 		--exclude '.DS_Store' \
 		"$src/" "$dest/"
+	while IFS= read -r dep; do
+		[ -n "$dep" ] || continue
+		mkdir -p "$dest/node_modules/$dep"
+		rsync -a --delete \
+			--exclude 'node_modules/' \
+			--exclude '.DS_Store' \
+			"$REPO_ROOT/packages/$dep/" "$dest/node_modules/$dep/"
+		echo "vendored: $dep -> $dest/node_modules/$dep"
+	done < <(list_workspace_deps "$src/package.json")
 	pi install "$dest"
 	echo "installed: $name -> $dest"
 done

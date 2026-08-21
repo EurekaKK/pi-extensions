@@ -25,8 +25,11 @@ scripts/install-extension.sh todo
 # 等价于：
 #   rsync -a --delete --exclude node_modules --exclude .DS_Store \
 #     extensions/todo/ ~/.pi/agent/my-extensions/todo/
+#   rsync 本仓库内部依赖（packages/*）到副本的 node_modules/
 #   pi install ~/.pi/agent/my-extensions/todo
 ```
+
+本包依赖仓库内部的 `config-store` 包；Pi 对本地路径安装不运行 `npm install`，脚本会把依赖一并复制进副本。
 
 使用 `pi config` 启用或停用该 extension。卸载：
 

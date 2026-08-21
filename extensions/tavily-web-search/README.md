@@ -22,8 +22,11 @@ scripts/install-extension.sh tavily-web-search
 # 等价于：
 #   rsync -a --delete --exclude node_modules --exclude .DS_Store \
 #     extensions/tavily-web-search/ ~/.pi/agent/my-extensions/tavily-web-search/
+#   rsync 本仓库内部依赖（packages/*）到副本的 node_modules/
 #   pi install ~/.pi/agent/my-extensions/tavily-web-search
 ```
+
+本包依赖仓库内部的 `config-store` 包；Pi 对本地路径安装不运行 `npm install`，脚本会把依赖一并复制进副本。
 
 通过 `pi config` 启用或停用。启动 Pi 前提供：
 
