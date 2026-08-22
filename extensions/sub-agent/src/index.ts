@@ -29,15 +29,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return prototype === Object.prototype || prototype === null;
 }
 
-function parseDescriptor(value: unknown): Pick<SubAgentDescriptorV1, "depth" | "parentSessionId"> | null {
+function parseDescriptor(value: unknown): Pick<SubAgentDescriptorV1, "depth"> | null {
 	if (!isRecord(value) || value.version !== 1) return null;
 	if (typeof value.parentSessionId !== "string" || value.parentSessionId.length === 0) return null;
 	if (!Number.isSafeInteger(value.depth) || typeof value.depth !== "number" || value.depth < 0) return null;
-	return { depth: value.depth, parentSessionId: value.parentSessionId };
+	return { depth: value.depth };
 }
 
-function readDescriptor(context: ExtensionContext): Pick<SubAgentDescriptorV1, "depth" | "parentSessionId"> | null {
-	let latest: Pick<SubAgentDescriptorV1, "depth" | "parentSessionId"> | null = null;
+function readDescriptor(context: ExtensionContext): Pick<SubAgentDescriptorV1, "depth"> | null {
+	let latest: Pick<SubAgentDescriptorV1, "depth"> | null = null;
 	try {
 		for (const entry of context.sessionManager.getBranch()) {
 			if (entry.type !== "custom" || entry.customType !== DESCRIPTOR_ENTRY_TYPE) continue;
@@ -87,7 +87,6 @@ export function registerSubAgent(pi: ExtensionAPI, config: SubAgentConfigV2): vo
 			pi,
 			childFactory: createPiChildSessionFactory(context),
 			ownerSessionId: sessionId,
-			...(descriptor === null ? {} : { directParentSessionId: descriptor.parentSessionId }),
 			cwd: context.cwd,
 			depth: descriptor?.depth ?? 0,
 			...(context.sessionManager.getSessionFile() === undefined

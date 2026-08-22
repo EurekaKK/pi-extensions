@@ -19,7 +19,6 @@ export interface SubagentManagerOptions {
 	readonly pi: Pick<ExtensionAPI, "sendMessage">;
 	readonly childFactory: ChildSessionFactory;
 	readonly ownerSessionId: string;
-	readonly directParentSessionId?: string | undefined;
 	readonly cwd: string;
 	readonly depth: number;
 	readonly parentSessionFile?: string | undefined;
@@ -111,7 +110,6 @@ export class SubagentManager {
 	readonly #parentThinkingLevel: string;
 	readonly #parentToolNames: readonly string[];
 	readonly #childSessionDir: string | undefined;
-	readonly #directParentSessionId: string | undefined;
 	readonly #getForkBoundary: (() => string | undefined) | undefined;
 	readonly #now: () => number;
 	readonly #children = new Map<string, ChildRecord>();
@@ -129,7 +127,6 @@ export class SubagentManager {
 		this.#parentThinkingLevel = options.parentThinkingLevel;
 		this.#parentToolNames = options.parentToolNames;
 		this.#childSessionDir = options.childSessionDir;
-		this.#directParentSessionId = options.directParentSessionId;
 		this.#getForkBoundary = options.getForkBoundary;
 		this.#now = options.now ?? Date.now;
 		registerManager(this);
@@ -206,21 +203,6 @@ export class SubagentManager {
 
 	list(scope: "children" | "descendants"): readonly SubagentListEntry[] {
 		return scope === "children" ? this.listChildren() : this.listDescendants();
-	}
-
-	async reportFrom(output: string): Promise<string> {
-		const parent =
-			this.#directParentSessionId === undefined ? undefined : managerRegistry.get(this.#directParentSessionId);
-		if (parent === undefined) {
-			throw new SubagentError("direct parent is not live; report was not delivered");
-		}
-		await parent.acceptChildMessage(
-			this.ownerSessionId,
-			REPORT_MESSAGE_TYPE,
-			output,
-			this.config.reportDelivery === "wakeup",
-		);
-		return "message queued for parent";
 	}
 
 	acceptChildMessage(childId: string, customType: string, text: string, wakeup: boolean): Promise<void> {
@@ -324,7 +306,7 @@ export class SubagentManager {
 			...(input.policy.persona === null ? {} : { persona: input.policy.persona }),
 			prompt: input.prompt,
 			signal: input.signal,
-			onReport: (output) => this.reportFrom(output),
+			onReport: (output) => this.#acceptChildReport(childId, output),
 		});
 
 		record.live = handle;
@@ -388,7 +370,7 @@ export class SubagentManager {
 					...(record.descriptor.toolFilter === undefined ? {} : { toolFilter: record.descriptor.toolFilter }),
 					...(record.descriptor.persona === undefined ? {} : { persona: record.descriptor.persona }),
 					prompt: turnText,
-					onReport: (output) => this.reportFrom(output),
+					onReport: (output) => this.#acceptChildReport(record.childId, output),
 				});
 				record.live = handle;
 				record.sessionFile = handle.sessionFile;
@@ -440,12 +422,14 @@ export class SubagentManager {
 		if (this.#shutdown) throw new SubagentError("sub-agent runtime is shut down");
 	}
 
+	async #acceptChildReport(childId: string, output: string): Promise<string> {
+		await this.acceptChildMessage(childId, REPORT_MESSAGE_TYPE, output, this.config.reportDelivery === "wakeup");
+		return "message queued for parent";
+	}
+
 	async #notifySettlement(childId: string, output: string): Promise<void> {
-		const parent =
-			this.#directParentSessionId === undefined ? undefined : managerRegistry.get(this.#directParentSessionId);
-		if (parent === undefined) return;
 		try {
-			await parent.acceptChildMessage(childId, SETTLEMENT_MESSAGE_TYPE, output, true);
+			await this.acceptChildMessage(childId, SETTLEMENT_MESSAGE_TYPE, output, true);
 		} catch {
 			// Settlement is best-effort when the parent session is no longer live.
 		}
