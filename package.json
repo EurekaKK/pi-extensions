@@ -9,6 +9,7 @@
 	},
 	"scripts": {
 		"check": "npm run check --workspaces --if-present",
-		"test": "npm test --workspaces --if-present"
+		"test": "npm test --workspaces --if-present && npm run test:install-script",
+		"test:install-script": "node --test \"scripts/test/*.test.mjs\""
 	}
 }

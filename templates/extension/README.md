@@ -10,6 +10,22 @@
 
 说明安装 package、启用 extension 和卸载的方法。
 
+## Extension 依赖
+
+本 extension 依赖其他 extension 时，在 package.json 中声明安装期依赖：
+
+```json
+{
+	"piExtensionDependencies": ["other-extension"]
+}
+```
+
+`scripts/install-extension.sh` 会先按「依赖优先」的拓扑顺序把全部依赖 extension 也镜像到
+`~/.pi/agent/my-extensions/<name>/` 并分别 `pi install`，再安装本 extension。要求：只能引用
+`extensions/` 下真实存在的目录名；声明必须无环；多根与菱形依赖只处理一次。该字段只表达安装期
+依赖，不构成源码依赖——源码仍禁止 import 兄弟 extension，运行期共享代码使用 `packages/` 内部
+共享包（以 `dependencies` 声明，安装脚本会 vendor 进副本）。没有依赖时省略该字段即可。
+
 ## 注册资源
 
 列出工具、命令、快捷键、CLI flag、事件钩子和状态键；没有时明确说明。

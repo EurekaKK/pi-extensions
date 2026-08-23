@@ -11,6 +11,15 @@ import {
 	SEARCH_TOOL_NAME,
 } from "./constants.js";
 import { extractEnvelope, searchEnvelope } from "./envelope.js";
+import {
+	renderExtractCall,
+	renderExtractResult,
+	renderSearchCall,
+	renderSearchResult,
+	TAVILY_DETAILS_VERSION,
+	type TavilyExtractDetailsV1,
+	type TavilySearchDetailsV1,
+} from "./renderer.js";
 
 const SEARCH_PARAMETERS = Type.Object(
 	{
@@ -33,8 +42,8 @@ const EXTRACT_PARAMETERS = Type.Object(
 	{ additionalProperties: false },
 );
 
-function textResult(text: string) {
-	return { content: [{ type: "text" as const, text }], details: Object.freeze({}) };
+function textResult<T extends TavilySearchDetailsV1 | TavilyExtractDetailsV1>(text: string, details: T) {
+	return { content: [{ type: "text" as const, text }], details: Object.freeze(details) };
 }
 
 export function registerTavilyTools(
@@ -67,7 +76,16 @@ export function registerTavilyTools(
 					config.searchTimeoutMs,
 					signal,
 				);
-				return textResult(searchEnvelope(hits));
+				return textResult(searchEnvelope(hits), {
+					tavily_details_version: TAVILY_DETAILS_VERSION,
+					tavily_hit_count: hits.length,
+				});
+			},
+			renderCall(args, theme, context) {
+				return renderSearchCall(args, theme, context);
+			},
+			renderResult(result, options, theme, context) {
+				return renderSearchResult(result, options, theme, context);
 			},
 		}),
 	);
@@ -93,7 +111,18 @@ export function registerTavilyTools(
 					config.extractTimeoutMs,
 					signal,
 				);
-				return textResult(extractEnvelope(extracted.pages, extracted.failedUrls));
+				return textResult(extractEnvelope(extracted.pages, extracted.failedUrls), {
+					tavily_details_version: TAVILY_DETAILS_VERSION,
+					tavily_url_count: parameters.urls.length,
+					tavily_page_count: extracted.pages.length,
+					tavily_failed_count: extracted.failedUrls.length,
+				});
+			},
+			renderCall(args, theme, context) {
+				return renderExtractCall(args, theme, context);
+			},
+			renderResult(result, options, theme, context) {
+				return renderExtractResult(result, options, theme, context);
 			},
 		}),
 	);

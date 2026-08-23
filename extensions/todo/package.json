@@ -38,6 +38,7 @@
 		"test-host": "*"
 	},
 	"dependencies": {
-		"config-store": "*"
+		"config-store": "*",
+		"progress-widget-protocol": "*"
 	}
 }

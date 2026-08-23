@@ -5,6 +5,13 @@ import {
 	type SessionEntry,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
+import {
+	PROGRESS_WIDGET_ATTACH_EVENT,
+	PROGRESS_WIDGET_RELEASE_EVENT,
+	PROGRESS_WIDGET_STATE_EVENT,
+	parseProgressWidgetAttach,
+	parseProgressWidgetRelease,
+} from "progress-widget-protocol";
 import { type FileMutationQueue, initializeTodoConfig, type TodoConfigV1 } from "./config.js";
 import { TODO_SNAPSHOT_ENTRY_TYPE } from "./constants.js";
 import { createTodoSnapshot, isFullyCompleted, parseTodoSnapshot, type TodoItem } from "./domain.js";
@@ -30,13 +37,17 @@ function notify(context: ExtensionContext, message: string): void {
 	}
 }
 
-function restoreVisibleTodos(context: ExtensionContext, state: TodoRuntimeState): void {
+function restoreVisibleTodos(
+	context: ExtensionContext,
+	state: TodoRuntimeState,
+	project: (context: ExtensionContext, todos: readonly TodoItem[] | null) => void,
+): void {
 	let entries: readonly SessionEntry[];
 	try {
 		entries = context.sessionManager.getBranch();
 	} catch {
 		state.visibleTodos = null;
-		tryProjectTodoWidget(context, null);
+		project(context, null);
 		notify(context, "Todo could not read the current session branch and cleared its widget.");
 		return;
 	}
@@ -57,7 +68,7 @@ function restoreVisibleTodos(context: ExtensionContext, state: TodoRuntimeState)
 	// A fully completed snapshot is the plan's terminal state; retire it on
 	// restore too so lists written before settling stay hidden after reload.
 	state.visibleTodos = latestValidTodos !== null && isFullyCompleted(latestValidTodos) ? null : latestValidTodos;
-	tryProjectTodoWidget(context, state.visibleTodos);
+	project(context, state.visibleTodos);
 
 	if (foundInvalidV2 && !state.warningShown) {
 		state.warningShown = true;
@@ -70,19 +81,59 @@ export function registerTodoExtension(pi: ExtensionAPI, config: TodoConfigV1): v
 		visibleTodos: null,
 		warningShown: false,
 	};
+	let currentContext: ExtensionContext | undefined;
+	let attachedSessionId: string | undefined;
+
+	function project(context: ExtensionContext, todos: readonly TodoItem[] | null): void {
+		currentContext = context;
+		const sessionId = context.sessionManager.getSessionId();
+		if (attachedSessionId === sessionId) {
+			tryProjectTodoWidget(context, null);
+			pi.events.emit(PROGRESS_WIDGET_STATE_EVENT, {
+				version: 1,
+				source: "todo",
+				sessionId,
+				todos: todos ?? [],
+			});
+			return;
+		}
+		tryProjectTodoWidget(context, todos);
+	}
+
+	pi.events.on(PROGRESS_WIDGET_ATTACH_EVENT, (value) => {
+		const attached = parseProgressWidgetAttach(value);
+		if (attached === null) return;
+		attachedSessionId = attached.sessionId;
+		if (currentContext?.sessionManager.getSessionId() === attached.sessionId) {
+			project(currentContext, state.visibleTodos);
+		}
+	});
+
+	pi.events.on(PROGRESS_WIDGET_RELEASE_EVENT, (value) => {
+		const released = parseProgressWidgetRelease(value);
+		if (released === null || attachedSessionId !== released.sessionId) return;
+		attachedSessionId = undefined;
+		if (currentContext?.sessionManager.getSessionId() === released.sessionId) {
+			project(currentContext, state.visibleTodos);
+		}
+	});
 
 	pi.on("session_start", (_event, context) => {
+		currentContext = context;
 		state.warningShown = false;
-		restoreVisibleTodos(context, state);
+		restoreVisibleTodos(context, state, project);
 	});
 
 	pi.on("session_tree", (_event, context) => {
-		restoreVisibleTodos(context, state);
+		currentContext = context;
+		restoreVisibleTodos(context, state, project);
 	});
 
 	pi.on("session_shutdown", (_event, context) => {
 		state.visibleTodos = null;
 		tryProjectTodoWidget(context, null);
+		currentContext = undefined;
+		attachedSessionId = undefined;
 	});
 
 	pi.registerTool(
@@ -97,7 +148,7 @@ export function registerTodoExtension(pi: ExtensionAPI, config: TodoConfigV1): v
 			},
 			show(todos, context) {
 				state.visibleTodos = todos;
-				tryProjectTodoWidget(context, todos);
+				project(context, todos);
 			},
 		}),
 	);

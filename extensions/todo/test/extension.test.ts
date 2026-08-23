@@ -1,5 +1,10 @@
 import { type Tool, type ToolCall, validateToolArguments } from "@earendil-works/pi-ai";
 import type { AgentToolResult, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+	PROGRESS_WIDGET_ATTACH_EVENT,
+	PROGRESS_WIDGET_RELEASE_EVENT,
+	PROGRESS_WIDGET_STATE_EVENT,
+} from "progress-widget-protocol";
 import { type CapturedTool, FakePiHost } from "test-host";
 import { describe, expect, it } from "vitest";
 import type { TodoConfigV1 } from "../src/config.js";
@@ -398,6 +403,31 @@ describe("Todo v2 extension", () => {
 		expect(text(result)).toContain("todo_write persistence failed:");
 		expect(harness.appendedEntries).toHaveLength(0);
 		expect(harness.setWidget).not.toHaveBeenCalled();
+	});
+
+	it("hands widget ownership to progress-widget and publishes todo snapshots", async () => {
+		const harness = new TodoHarness("rpc", true, CONFIG_TRUE);
+		const snapshots: unknown[] = [];
+		harness.host.api.events.on(PROGRESS_WIDGET_STATE_EVENT, (value) => snapshots.push(value));
+		await harness.lifecycle("session_start");
+
+		harness.host.emitBus(PROGRESS_WIDGET_ATTACH_EVENT, { version: 1, sessionId: "session-1" });
+		await harness.invokeTodo({ todos: [{ content: "work", status: "in_progress" }] });
+
+		expect(harness.setWidget).toHaveBeenCalledWith(TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
+		expect(snapshots.at(-1)).toEqual({
+			version: 1,
+			source: "todo",
+			sessionId: "session-1",
+			todos: [{ content: "work", status: "in_progress" }],
+		});
+
+		harness.host.emitBus(PROGRESS_WIDGET_RELEASE_EVENT, { version: 1, sessionId: "session-1" });
+		expect(harness.setWidget).toHaveBeenLastCalledWith(
+			TODO_WIDGET_KEY,
+			["Todos · 1 in progress · 0 pending · 0 completed", "◐ work"],
+			{ placement: "aboveEditor" },
+		);
 	});
 
 	it("never calls UI in non-UI modes", async () => {

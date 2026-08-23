@@ -1,7 +1,8 @@
 export type SubagentProviderName = "spawn" | "fork";
 export type ChildMode = "one-shot" | "continuable";
 export type ChildStatus = "running" | "idle" | "ready";
-export type SubagentStopReason = "completed" | "aborted" | "error" | "max-tokens" | "refusal";
+export type SubagentRunStatus = "running" | "interrupting" | "completed" | "interrupted" | "failed";
+export type SubagentRunOutcome = "completed" | "interrupted" | "failed";
 
 export type SubagentToolMode = "one-shot" | "continuable";
 
@@ -99,6 +100,9 @@ export interface ChildRecord {
 	sessionFile?: string | undefined;
 	live?: ChildSessionHandle | undefined;
 	active: boolean;
+	interruptRequested: boolean;
+	runId: string;
+	runStatus: SubagentRunStatus;
 	readonly pending: PendingChildMessage[];
 	status: ChildStatus;
 	readonly descriptor: SubAgentDescriptorV1;

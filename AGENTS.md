@@ -12,13 +12,16 @@
 - `templates/extension/` 是新 extension 的脚手架来源。首次创建 extension 时若模板尚不存在，应先建立与本文件一致的模板。
 - `scripts/` 仅存放仓库级开发与发布辅助脚本，不包含 extension 运行时代码。本地安装统一走
   `scripts/install-extension.sh`：先把 package 复制到 `~/.pi/agent/my-extensions/<name>/` 再
-  `pi install` 该副本（Pi 对本地路径只登记不复制）；extension README 的安装说明必须与该模式一致。
+  `pi install` 该副本（Pi 对本地路径只登记不复制）；脚本先由 `scripts/install-plan.mjs` 递归解析
+  安装 closure（`piExtensionDependencies` 依赖 extension 与 `packages/*` 代码依赖，检测
+  unknown/self/cycle 后做依赖优先的稳定拓扑排序，多根与菱形去重），计划失败时不写入任何文件；
+  extension README 的安装说明必须与该模式一致。
 - `eval/` 是独立的 Python Harbor 评测夹具（uv / Harbor peer），不是 Pi extension，不得加入 npm workspaces。
 - `packages/` 存放内部共享包（如 `config-store`）：它们是普通 npm workspace 包，不是 Pi extension，不注册 Pi
   资源，也不进入根 README 的 extension 索引；extension 只能以显式依赖声明使用它们。
-- extension 之间必须保持独立，不得直接引用兄弟 extension 的源码或依赖其未声明的文件。
+- extension 可以通过显式安装依赖组成依赖图，但源码必须隔离：不得直接引用兄弟 extension 的源码或依赖其未声明的文件。
 - extension 不得引用 `eval/`。
-- 每个 extension 必须能够独立安装、运行、检查、测试和发布。
+- 每个 extension 必须独立维护实现、配置、检查、测试、版本和发布边界；本地安装以声明的完整依赖 closure 为单位。依赖 extension 缺失、被禁用或加载失败时，消费者必须安全降级或 fail-closed，不得使 Pi 无法加载。
 - 子目录 `AGENTS.md` 按需创建，只补充该目录的特殊约束，不复制根规则。
 
 ## Git 忽略准则
@@ -79,6 +82,12 @@ biome.json
 - 能用 Node.js 标准库或 Pi API 完成时，不新增运行时依赖。
 - 新增运行时依赖前，必须说明用途、替代方案和供应链风险并取得确认。
 - 禁止在运行时下载或执行未声明的依赖。
+- extension 可以声明安装期依赖：package.json 自定义字段 `piExtensionDependencies: string[]`，
+  只允许引用 `extensions/` 下真实存在的目录名且必须无环（未知名字、自依赖和环由安装脚本检测并
+  拒绝）。该字段只影响安装顺序与去重，不构成源码级依赖：extension 源码仍禁止 import 兄弟
+  extension，运行期共享代码仍只能通过 `packages/` 内部共享包（见 ADR-0034）。不得用 npm
+  `dependencies` 表达安装期依赖：其中命中 `extensions/*` 名字的条目由安装计划直接拒绝；命中
+  `packages/*` 的按内部代码包递归解析并 vendor，其他条目视为外部依赖。
 
 ## Pi API 与运行时行为
 

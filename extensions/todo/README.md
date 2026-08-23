@@ -3,7 +3,7 @@
 为 Pi 提供模型可见的结构化任务列表。模型通过 `todo_write` 工具每次发送完整列表；每次成功写入都会把
 完整快照追加到当前 Pi session，后写覆盖先写。
 
-`todo:status` widget 在编辑器上方常驻显示当前计划；它跨 turn 保留，直到计划被清空或终结：模型可以用
+当前计划会投影到编辑器上方：启用 `progress-widget` 时发布只读快照供组合 widget 渲染；未启用时由两行 `todo:status` Compact fallback widget 显示数量概览和第一个 `in_progress`（没有时显示第一个 `pending`）。投影跨 turn 保留，直到计划被清空或终结：模型可以用
 `todo_write({ todos: [] })` 显式清空；当一次写入的结果是非空的全部 `completed` 列表时，extension 视为计划完成，
 自动按空列表落盘并清除 widget，不依赖模型再发一次空数组。session 关闭同样会移除 widget。
 
@@ -22,14 +22,9 @@
 
 ```bash
 scripts/install-extension.sh todo
-# 等价于：
-#   rsync -a --delete --exclude node_modules --exclude .DS_Store \
-#     extensions/todo/ ~/.pi/agent/my-extensions/todo/
-#   rsync 本仓库内部依赖（packages/*）到副本的 node_modules/
-#   pi install ~/.pi/agent/my-extensions/todo
 ```
 
-本包依赖仓库内部的 `config-store` 包；Pi 对本地路径安装不运行 `npm install`，脚本会把依赖一并复制进副本。
+Pi 对本地路径安装不运行 `npm install`；仓库脚本会先解析完整安装计划，再镜像 package，并把本包声明的内部 package 代码依赖递归 vendor 进副本。
 
 使用 `pi config` 启用或停用该 extension。卸载：
 
@@ -40,6 +35,10 @@ rm -rf ~/.pi/agent/my-extensions/todo
 
 卸载不会删除 agent 配置文件，也不会修改已有 Pi session。不再需要时，可手动删除
 `<agentDir>/todo/config.json`。
+
+## Extension 依赖
+
+无。
 
 ## 配置
 
@@ -79,6 +78,7 @@ extension 注册：
 - UI widget `todo:status`。
 - custom session entry `todo:snapshot`（version 2）。
 - `session_start`、`session_tree`、`session_shutdown` 生命周期处理器。
+- `progress-widget:*` event bus 状态发布与投影所有权握手。
 
 它不注册 slash command、键盘快捷键、CLI flag、消息 renderer、timer、watcher、进程或 socket。
 
@@ -151,15 +151,14 @@ todo_write({ "todos": [] })
 
 ## Widget 语义
 
-`todo:status` 在编辑器上方显示当前计划：
+未启用 `progress-widget` 时，`todo:status` fallback widget 在编辑器上方显示当前计划：
 
 - `todo_write` 成功时显示最新列表。
 - turn 边界不会清空或隐藏列表。
 - session 恢复、fork 和 tree navigation 后显示目标 branch 的最后一条有效快照。
 - 空列表 `[]` 清空 widget；非空但全部 `completed` 的写入同样视为终态并清空。
 
-TUI 最多显示 5 项，顺序为 `in_progress`、`pending`、`completed`，超出的项在 header 中显示 `+N`。RPC 模式
-通过 UI bridge 发送纯文本行；JSON 和 print 模式不调用 UI。
+Compact fallback 固定最多两行：header 显示三种状态计数，第二行优先显示第一个 `in_progress`，没有时显示第一个 `pending`。启用 `progress-widget` 后，本 extension 清除 fallback 并发布保持原提交顺序的完整 Todo 快照；收到 `progress-widget:release` 后恢复 fallback。RPC 模式通过 UI bridge 发送纯文本行；JSON 和 print 模式不调用 UI。
 
 ## 持久化与分支
 

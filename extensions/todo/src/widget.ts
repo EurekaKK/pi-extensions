@@ -9,22 +9,15 @@ const STATUS_MARK: Readonly<Record<TodoStatus, string>> = Object.freeze({
 	completed: "✓",
 });
 
-function orderedTodos(todos: readonly TodoItem[]): readonly TodoItem[] {
-	return [
-		...todos.filter((todo) => todo.status === "in_progress"),
-		...todos.filter((todo) => todo.status === "pending"),
-		...todos.filter((todo) => todo.status === "completed"),
-	];
+function firstActionable(todos: readonly TodoItem[]): TodoItem | undefined {
+	return todos.find((todo) => todo.status === "in_progress") ?? todos.find((todo) => todo.status === "pending");
 }
 
 export function buildTodoWidgetLines(todos: readonly TodoItem[]): string[] {
 	const counts = countTodos(todos);
-	const ordered = orderedTodos(todos);
-	const visible = ordered.slice(0, 5);
-	const hidden = todos.length - visible.length;
-	const hiddenLabel = hidden > 0 ? ` · … +${hidden}` : "";
-	const header = `Todos · ${counts.inProgress} in progress · ${counts.pending} pending · ${counts.completed} completed${hiddenLabel}`;
-	return [header, ...visible.map((todo) => `${STATUS_MARK[todo.status]} ${todo.content}`)];
+	const header = `Todos · ${counts.inProgress} in progress · ${counts.pending} pending · ${counts.completed} completed`;
+	const first = firstActionable(todos);
+	return first === undefined ? [header] : [header, `${STATUS_MARK[first.status]} ${first.content}`];
 }
 
 export class TodoWidgetComponent implements Component {
@@ -40,12 +33,10 @@ export class TodoWidgetComponent implements Component {
 		const plainLines = buildTodoWidgetLines(this.#todos);
 		const header = plainLines[0] ?? "Todos";
 		const rendered = [this.#theme.fg("accent", this.#theme.bold(header))];
-		for (const todo of orderedTodos(this.#todos).slice(0, 5)) {
-			const mark = this.#theme.fg(statusColor(todo.status), STATUS_MARK[todo.status]);
-			const text =
-				todo.status === "completed"
-					? this.#theme.fg("muted", this.#theme.strikethrough(todo.content))
-					: this.#theme.fg("text", todo.content);
+		const first = firstActionable(this.#todos);
+		if (first !== undefined) {
+			const mark = this.#theme.fg(statusColor(first.status), STATUS_MARK[first.status]);
+			const text = this.#theme.fg("text", first.content);
 			rendered.push(`${mark} ${text}`);
 		}
 		return rendered.map((line) => truncateToWidth(line, Math.max(1, width)));

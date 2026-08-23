@@ -10,6 +10,8 @@ import type {
 	SubAgentDescriptorV1,
 	SubagentDelegationToolConfigV2,
 	SubagentProviderName,
+	SubagentRunOutcome,
+	SubagentRunStatus,
 	SubagentStartResult,
 } from "./domain.js";
 import { SubagentError } from "./domain.js";
@@ -19,7 +21,6 @@ export interface SubagentManagerOptions {
 	readonly pi: Pick<ExtensionAPI, "sendMessage">;
 	readonly childFactory: ChildSessionFactory;
 	readonly ownerSessionId: string;
-	readonly directParentSessionId?: string | undefined;
 	readonly cwd: string;
 	readonly depth: number;
 	readonly parentSessionFile?: string | undefined;
@@ -29,6 +30,7 @@ export interface SubagentManagerOptions {
 	readonly childSessionDir?: string | undefined;
 	readonly getForkBoundary?: (() => string | undefined) | undefined;
 	readonly now?: (() => number) | undefined;
+	readonly onStateChanged?: ((agents: readonly SubagentUiEntry[]) => void) | undefined;
 }
 
 export interface SubagentListEntry {
@@ -38,6 +40,12 @@ export interface SubagentListEntry {
 	readonly parentSessionId: string;
 	readonly depth: number;
 	readonly diagnostic?: "corrupt" | "unsupported" | "unavailable";
+}
+
+export interface SubagentUiEntry {
+	readonly childId: string;
+	readonly label: string;
+	readonly status: SubagentRunStatus;
 }
 
 interface StartChildInput {
@@ -111,9 +119,9 @@ export class SubagentManager {
 	readonly #parentThinkingLevel: string;
 	readonly #parentToolNames: readonly string[];
 	readonly #childSessionDir: string | undefined;
-	readonly #directParentSessionId: string | undefined;
 	readonly #getForkBoundary: (() => string | undefined) | undefined;
 	readonly #now: () => number;
+	readonly #onStateChanged: ((agents: readonly SubagentUiEntry[]) => void) | undefined;
 	readonly #children = new Map<string, ChildRecord>();
 	#shutdown = false;
 
@@ -129,9 +137,9 @@ export class SubagentManager {
 		this.#parentThinkingLevel = options.parentThinkingLevel;
 		this.#parentToolNames = options.parentToolNames;
 		this.#childSessionDir = options.childSessionDir;
-		this.#directParentSessionId = options.directParentSessionId;
 		this.#getForkBoundary = options.getForkBoundary;
 		this.#now = options.now ?? Date.now;
+		this.#onStateChanged = options.onStateChanged;
 		registerManager(this);
 	}
 
@@ -163,18 +171,24 @@ export class SubagentManager {
 		this.#assertMutable();
 		const record = this.#requireChild(childId);
 		if (record.mode !== "continuable") throw new SubagentError(`subagent ${childId} is not continuable`);
+		record.pending.push({ messageId: randomUUID(), text });
 		if (record.status === "running" || record.active) {
-			record.pending.push({ messageId: randomUUID(), text });
 			return `message queued as the next turn for subagent ${childId}`;
 		}
-		void this.#activateContinuable(record, text);
+		const next = record.pending.shift();
+		if (next !== undefined) void this.#activateContinuable(record, next.text);
 		return `message queued as the next turn for subagent ${childId}`;
 	}
 
 	interrupt(childId: string): void {
 		const record = this.#children.get(childId);
 		if (record !== undefined) {
-			if (record.active) void record.live?.abort().catch(() => undefined);
+			if ((record.runStatus === "running" || record.runStatus === "interrupting") && !record.interruptRequested) {
+				record.interruptRequested = true;
+				record.runStatus = "interrupting";
+				this.#emitState();
+				void record.live?.abort().catch(() => undefined);
+			}
 			return;
 		}
 		for (const child of this.#children.values()) {
@@ -208,34 +222,40 @@ export class SubagentManager {
 		return scope === "children" ? this.listChildren() : this.listDescendants();
 	}
 
-	async reportFrom(output: string): Promise<string> {
-		const parent =
-			this.#directParentSessionId === undefined ? undefined : managerRegistry.get(this.#directParentSessionId);
-		if (parent === undefined) {
-			throw new SubagentError("direct parent is not live; report was not delivered");
-		}
-		await parent.acceptChildMessage(
-			this.ownerSessionId,
-			REPORT_MESSAGE_TYPE,
-			output,
-			this.config.reportDelivery === "wakeup",
+	listUiAgents(): readonly SubagentUiEntry[] {
+		return Object.freeze(
+			[...this.#children.values()].map((record) =>
+				Object.freeze({ childId: record.childId, label: record.label, status: record.runStatus }),
+			),
 		);
-		return "message queued for parent";
 	}
 
-	acceptChildMessage(childId: string, customType: string, text: string, wakeup: boolean): Promise<void> {
+	acceptChildMessage(input: {
+		readonly record: ChildRecord;
+		readonly customType: typeof REPORT_MESSAGE_TYPE | typeof SETTLEMENT_MESSAGE_TYPE;
+		readonly text: string;
+		readonly wakeup: boolean;
+		readonly runId?: string;
+		readonly outcome?: SubagentRunOutcome;
+	}): Promise<void> {
 		const content =
-			customType === REPORT_MESSAGE_TYPE
-				? `Background subagent ${childId} reported:\n${text}`
-				: `Background subagent ${childId} finished:\n${text}`;
+			input.customType === REPORT_MESSAGE_TYPE
+				? `Background subagent ${input.record.childId} reported:\n${input.text}`
+				: `Background subagent ${input.record.childId} finished:\n${input.text}`;
 		this.#pi.sendMessage(
 			{
-				customType,
+				customType: input.customType,
 				content,
 				display: true,
-				details: { childId },
+				details: {
+					version: 1,
+					childId: input.record.childId,
+					label: input.record.label,
+					...(input.runId === undefined ? {} : { runId: input.runId }),
+					...(input.outcome === undefined ? {} : { outcome: input.outcome }),
+				},
 			},
-			{ triggerTurn: wakeup },
+			{ triggerTurn: input.wakeup },
 		);
 		return Promise.resolve();
 	}
@@ -261,6 +281,51 @@ export class SubagentManager {
 			parentSessionId: record.parentSessionId,
 			depth: record.depth,
 		});
+	}
+
+	#emitState(): void {
+		if (this.#shutdown || this.#onStateChanged === undefined) return;
+		try {
+			this.#onStateChanged(this.listUiAgents());
+		} catch {
+			// Advisory UI projection only.
+		}
+	}
+
+	#settle(record: ChildRecord, outcome: SubagentRunOutcome): void {
+		record.active = false;
+		record.interruptRequested = false;
+		record.runStatus = outcome;
+		record.status = record.mode === "continuable" ? "ready" : "idle";
+		this.#emitState();
+		if (
+			[...this.#children.values()].some((child) => child.runStatus === "running" || child.runStatus === "interrupting")
+		) {
+			return;
+		}
+		let removed = false;
+		for (const [childId, child] of this.#children) {
+			if (child.mode === "one-shot") {
+				this.#children.delete(childId);
+				removed = true;
+			}
+		}
+		if (removed) this.#emitState();
+	}
+
+	async #disposeLive(record: ChildRecord): Promise<void> {
+		const live = record.live;
+		record.live = undefined;
+		if (live !== undefined) await live.dispose().catch(() => undefined);
+	}
+
+	#beginRun(record: ChildRecord): void {
+		record.active = true;
+		record.interruptRequested = false;
+		record.runId = randomUUID();
+		record.runStatus = "running";
+		record.status = "running";
+		this.#emitState();
 	}
 
 	async #startChild(input: StartChildInput, foreground: boolean): Promise<SubagentStartResult> {
@@ -297,58 +362,81 @@ export class SubagentManager {
 			depth: childDepth,
 			label: input.label,
 			active: false,
+			interruptRequested: false,
+			runId: randomUUID(),
+			runStatus: "running",
 			pending: [],
 			status: "ready",
 			descriptor,
 		};
 		this.#children.set(childId, record);
+		this.#emitState();
 
-		const handle = await this.#childFactory.create({
-			childId,
-			provider: input.provider,
-			mode: input.mode,
-			parentSessionId: this.ownerSessionId,
-			parentSessionFile: this.#parentSessionFile,
-			...(input.provider === "fork" && this.#getForkBoundary !== undefined
-				? { forkBeforeEntryId: this.#getForkBoundary() }
-				: {}),
-			cwd: this.#cwd,
-			...(input.mode === "continuable" && this.#childSessionDir !== undefined
-				? { sessionDir: this.#childSessionDir }
-				: {}),
-			depth: childDepth,
-			model,
-			thinkingLevel,
-			toolNames,
-			...(input.policy.toolFilter === null ? {} : { toolFilter: input.policy.toolFilter }),
-			...(input.policy.persona === null ? {} : { persona: input.policy.persona }),
-			prompt: input.prompt,
-			signal: input.signal,
-			onReport: (output) => this.reportFrom(output),
-		});
+		let handle: Awaited<ReturnType<ChildSessionFactory["create"]>>;
+		try {
+			handle = await this.#childFactory.create({
+				childId,
+				provider: input.provider,
+				mode: input.mode,
+				parentSessionId: this.ownerSessionId,
+				parentSessionFile: this.#parentSessionFile,
+				...(input.provider === "fork" && this.#getForkBoundary !== undefined
+					? { forkBeforeEntryId: this.#getForkBoundary() }
+					: {}),
+				cwd: this.#cwd,
+				...(input.mode === "continuable" && this.#childSessionDir !== undefined
+					? { sessionDir: this.#childSessionDir }
+					: {}),
+				depth: childDepth,
+				model,
+				thinkingLevel,
+				toolNames,
+				...(input.policy.toolFilter === null ? {} : { toolFilter: input.policy.toolFilter }),
+				...(input.policy.persona === null ? {} : { persona: input.policy.persona }),
+				prompt: input.prompt,
+				signal: input.signal,
+				onReport: (output) => this.#acceptChildReport(childId, output),
+			});
+		} catch (error) {
+			this.#children.delete(childId);
+			this.#emitState();
+			throw error;
+		}
 
 		record.live = handle;
 		record.sessionFile = handle.sessionFile;
 		record.status = "idle";
 
+		if (record.interruptRequested) {
+			record.active = true;
+			const runId = record.runId;
+			await handle.abort().catch(() => undefined);
+			await this.#disposeLive(record);
+			this.#settle(record, "interrupted");
+			if (foreground) {
+				const error = new Error("Subagent run interrupted before start");
+				error.name = "AbortError";
+				throw error;
+			}
+			void this.#notifySettlement(record, runId, "interrupted", "subagent run cancelled: interrupted before start");
+			return { childId, foreground: false };
+		}
+
 		if (foreground) {
 			record.active = true;
 			record.status = "running";
+			this.#emitState();
 			try {
 				await handle.prompt(input.prompt);
 				const output = finalChildText(handle.messages());
-				record.status = "idle";
-				record.active = false;
-				await handle.dispose().catch(() => undefined);
-				record.live = undefined;
-				this.#children.delete(childId);
+				const outcome: SubagentRunOutcome = record.interruptRequested ? "interrupted" : "completed";
+				await this.#disposeLive(record);
+				this.#settle(record, outcome);
 				return { childId, foreground: true, output };
 			} catch (error) {
-				record.status = "idle";
-				record.active = false;
-				await handle.dispose().catch(() => undefined);
-				record.live = undefined;
-				this.#children.delete(childId);
+				const interrupted = record.interruptRequested || (error instanceof Error && error.name === "AbortError");
+				await this.#disposeLive(record);
+				this.#settle(record, interrupted ? "interrupted" : "failed");
 				throw error;
 			}
 		}
@@ -362,14 +450,8 @@ export class SubagentManager {
 			record.pending.push({ messageId: randomUUID(), text });
 			return;
 		}
-		record.active = true;
-		record.status = "running";
+		this.#beginRun(record);
 		let turnText = text;
-		if (record.pending.length > 0) {
-			record.pending.push({ messageId: randomUUID(), text });
-			const first = record.pending.shift();
-			if (first !== undefined) turnText = first.text;
-		}
 		try {
 			let handle = record.live;
 			if (handle === undefined) {
@@ -388,33 +470,50 @@ export class SubagentManager {
 					...(record.descriptor.toolFilter === undefined ? {} : { toolFilter: record.descriptor.toolFilter }),
 					...(record.descriptor.persona === undefined ? {} : { persona: record.descriptor.persona }),
 					prompt: turnText,
-					onReport: (output) => this.reportFrom(output),
+					onReport: (output) => this.#acceptChildReport(record.childId, output),
 				});
 				record.live = handle;
 				record.sessionFile = handle.sessionFile;
 			}
 
+			if (record.interruptRequested) {
+				const runId = record.runId;
+				await handle.abort().catch(() => undefined);
+				await this.#disposeLive(record);
+				this.#settle(record, "interrupted");
+				void this.#notifySettlement(record, runId, "interrupted", "subagent run cancelled: interrupted before start");
+				return;
+			}
+
 			while (record.active) {
 				await handle.prompt(turnText);
+				if (record.interruptRequested) break;
 				const next = record.pending.shift();
 				if (next === undefined) break;
 				turnText = next.text;
 			}
 
 			const output = finalChildText(handle.messages());
-			record.status = "ready";
-			record.active = false;
-			await handle.dispose().catch(() => undefined);
-			record.live = undefined;
-			void this.#notifySettlement(record.childId, output);
+			const outcome: SubagentRunOutcome = record.interruptRequested ? "interrupted" : "completed";
+			const runId = record.runId;
+			await this.#disposeLive(record);
+			this.#settle(record, outcome);
+			void this.#notifySettlement(record, runId, outcome, output);
+			if (outcome === "completed") {
+				const next = record.pending.shift();
+				if (next !== undefined) void this.#activateContinuable(record, next.text);
+			}
 		} catch (error) {
-			record.status = "ready";
-			record.active = false;
-			if (record.live !== undefined) await record.live.dispose().catch(() => undefined);
-			record.live = undefined;
-			const reason = error instanceof Error && error.name === "AbortError" ? "cancelled" : "failed";
+			const interrupted = record.interruptRequested || (error instanceof Error && error.name === "AbortError");
+			const outcome: SubagentRunOutcome = interrupted ? "interrupted" : "failed";
+			const runId = record.runId;
+			await this.#disposeLive(record);
+			this.#settle(record, outcome);
+			const reason = interrupted ? "cancelled" : "failed";
 			void this.#notifySettlement(
-				record.childId,
+				record,
+				runId,
+				outcome,
 				`subagent run ${reason}: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
@@ -440,12 +539,33 @@ export class SubagentManager {
 		if (this.#shutdown) throw new SubagentError("sub-agent runtime is shut down");
 	}
 
-	async #notifySettlement(childId: string, output: string): Promise<void> {
-		const parent =
-			this.#directParentSessionId === undefined ? undefined : managerRegistry.get(this.#directParentSessionId);
-		if (parent === undefined) return;
+	async #acceptChildReport(childId: string, output: string): Promise<string> {
+		const record = this.#requireChild(childId);
+		await this.acceptChildMessage({
+			record,
+			customType: REPORT_MESSAGE_TYPE,
+			text: output,
+			wakeup: this.config.reportDelivery === "wakeup",
+			runId: record.runId,
+		});
+		return "message queued for parent";
+	}
+
+	async #notifySettlement(
+		record: ChildRecord,
+		runId: string,
+		outcome: SubagentRunOutcome,
+		output: string,
+	): Promise<void> {
 		try {
-			await parent.acceptChildMessage(childId, SETTLEMENT_MESSAGE_TYPE, output, true);
+			await this.acceptChildMessage({
+				record,
+				customType: SETTLEMENT_MESSAGE_TYPE,
+				text: output,
+				wakeup: true,
+				runId,
+				outcome,
+			});
 		} catch {
 			// Settlement is best-effort when the parent session is no longer live.
 		}

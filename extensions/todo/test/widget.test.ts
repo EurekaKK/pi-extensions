@@ -4,7 +4,7 @@ import { TODO_WIDGET_KEY } from "../src/constants.js";
 import { buildTodoWidgetLines, projectTodoWidget, TodoWidgetComponent } from "../src/widget.js";
 
 describe("Todo v2 widget", () => {
-	it("orders in_progress, pending, completed and bounds to five items", () => {
+	it("shows counts and only the first in-progress item", () => {
 		const lines = buildTodoWidgetLines([
 			{ content: "c1", status: "completed" },
 			{ content: "p1", status: "pending" },
@@ -14,8 +14,16 @@ describe("Todo v2 widget", () => {
 			{ content: "i2", status: "in_progress" },
 		]);
 
-		expect(lines[0]).toBe("Todos · 2 in progress · 2 pending · 2 completed · … +1");
-		expect(lines.slice(1)).toEqual(["◐ i1", "◐ i2", "○ p1", "○ p2", "✓ c1"]);
+		expect(lines).toEqual(["Todos · 2 in progress · 2 pending · 2 completed", "◐ i1"]);
+	});
+
+	it("falls back to the first pending item", () => {
+		expect(
+			buildTodoWidgetLines([
+				{ content: "done", status: "completed" },
+				{ content: "next", status: "pending" },
+			]),
+		).toEqual(["Todos · 0 in progress · 1 pending · 1 completed", "○ next"]);
 	});
 
 	it("renders a width-truncated component", () => {

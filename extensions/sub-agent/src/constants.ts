@@ -4,6 +4,7 @@ export const SEND_MESSAGE_TOOL_NAME = "send_message";
 export const INTERRUPT_AGENT_TOOL_NAME = "interrupt_agent";
 export const LIST_AGENTS_TOOL_NAME = "list_agents";
 export const REPORT_TOOL_NAME = "report";
+export const SUBAGENT_WIDGET_KEY = "sub-agent:status";
 
 export const DESCRIPTOR_ENTRY_TYPE = "subagent:descriptor";
 export const SETTLEMENT_MESSAGE_TYPE = "subagent:settlement";
