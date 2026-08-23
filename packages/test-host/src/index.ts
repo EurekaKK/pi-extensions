@@ -42,6 +42,11 @@ export interface SentMessage {
 	readonly options: Record<string, unknown> | undefined;
 }
 
+export interface CapturedShortcut {
+	readonly description: string;
+	handler(context: ExtensionContext): unknown | Promise<unknown>;
+}
+
 export interface FakePiHostOptions {
 	readonly mode?: ExtensionContext["mode"];
 	readonly hasUI?: boolean;
@@ -51,6 +56,8 @@ export interface FakePiHostOptions {
 export class FakePiHost {
 	readonly tools: CapturedTool[] = [];
 	readonly commands = new Map<string, CapturedCommand>();
+	readonly shortcuts = new Map<string, CapturedShortcut>();
+	readonly messageRenderers = new Map<string, unknown>();
 	readonly appendedEntries: AppendedEntry[] = [];
 	readonly sentMessages: SentMessage[] = [];
 	readonly ui = {
@@ -69,6 +76,7 @@ export class FakePiHost {
 	readonly context: ExtensionContext;
 
 	#handlers = new Map<string, Handler[]>();
+	#eventBusHandlers = new Map<string, Array<(data: unknown) => void>>();
 	#entries: SessionEntry[] = [];
 	#nextId = 1;
 	readonly #mode: ExtensionContext["mode"];
@@ -91,6 +99,29 @@ export class FakePiHost {
 			},
 			registerCommand: (name: string, command: CapturedCommand) => {
 				this.commands.set(name, command);
+			},
+			registerShortcut: (shortcut: string, definition: CapturedShortcut) => {
+				this.shortcuts.set(shortcut, definition);
+			},
+			registerMessageRenderer: (customType: string, renderer: unknown) => {
+				this.messageRenderers.set(customType, renderer);
+			},
+			events: {
+				emit: (channel: string, data: unknown) => {
+					for (const handler of this.#eventBusHandlers.get(channel) ?? []) handler(data);
+				},
+				on: (channel: string, handler: (data: unknown) => void) => {
+					const handlers = this.#eventBusHandlers.get(channel) ?? [];
+					handlers.push(handler);
+					this.#eventBusHandlers.set(channel, handlers);
+					return () => {
+						const current = this.#eventBusHandlers.get(channel) ?? [];
+						this.#eventBusHandlers.set(
+							channel,
+							current.filter((candidate) => candidate !== handler),
+						);
+					};
+				},
 			},
 			appendEntry: (customType: string, data: unknown) => {
 				if (this.failAppend) throw new Error("disk unavailable");
@@ -132,6 +163,14 @@ export class FakePiHost {
 
 	async emit(event: string, payload: Record<string, unknown> = {}): Promise<void> {
 		for (const handler of this.#handlers.get(event) ?? []) await handler(payload, this.context);
+	}
+
+	emitBus(channel: string, data: unknown): void {
+		for (const handler of this.#eventBusHandlers.get(channel) ?? []) handler(data);
+	}
+
+	async invokeShortcut(shortcut: string): Promise<void> {
+		await this.shortcuts.get(shortcut)?.handler(this.context);
 	}
 
 	branch(): readonly SessionEntry[] {

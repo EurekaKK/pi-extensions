@@ -19,14 +19,9 @@
 
 ```bash
 scripts/install-extension.sh tavily-web-search
-# 等价于：
-#   rsync -a --delete --exclude node_modules --exclude .DS_Store \
-#     extensions/tavily-web-search/ ~/.pi/agent/my-extensions/tavily-web-search/
-#   rsync 本仓库内部依赖（packages/*）到副本的 node_modules/
-#   pi install ~/.pi/agent/my-extensions/tavily-web-search
 ```
 
-本包依赖仓库内部的 `config-store` 包；Pi 对本地路径安装不运行 `npm install`，脚本会把依赖一并复制进副本。
+Pi 对本地路径安装不运行 `npm install`；仓库脚本会先解析完整安装计划，再镜像 package，并把本包声明的内部 package 代码依赖递归 vendor 进副本。
 
 通过 `pi config` 启用或停用。启动 Pi 前提供：
 
@@ -42,6 +37,10 @@ rm -rf ~/.pi/agent/my-extensions/tavily-web-search
 ```
 
 卸载不会删除用户配置。不再需要时可手动删除 agent dir 下的 `tavily-web-search/`。
+
+## Extension 依赖
+
+无。
 
 ## 配置
 
@@ -78,7 +77,27 @@ rm -rf ~/.pi/agent/my-extensions/tavily-web-search
 - `tavily_search`：Tavily Search。参数 `query`；可选 `include_domains`（最多 300）、`exclude_domains`（最多 150）、`time_range`（`day` | `week` | `month` | `year`）。
 - `tavily_extract`：Tavily Extract。参数 `urls`（1–20 个 URL，由模型提供，不必来自某次 Search）；可选 `query`（按问题重排 chunk）。
 
-不注册 slash command、widget、自定义 renderer。缺 key 或配置失败时不注册工具、不联网，并在 `session_start` 通知一次。
+两个工具注册静态 `renderCall` / `renderResult` 紧凑 TUI renderer（见「TUI 展示」），不注册 slash command 或 widget。缺 key 或配置失败时不注册工具、不联网，并在 `session_start` 通知一次。
+
+两个工具结果的 `details` 携带最小版本化结构化元数据，字段带 `tavily_` 前缀：
+
+- `tavily_details_version`：恒为 `1`。
+- Search：`tavily_hit_count`。
+- Extract：`tavily_url_count`、`tavily_page_count`、`tavily_failed_count`。
+
+details 只服务 TUI 渲染与诊断，不进入给 LLM 的 content envelope；所有模型所需信息都在 envelope 里。不包含 timing、API key 或原始 Tavily 响应。
+
+## TUI 展示
+
+紧凑 renderer 只影响支持渲染的客户端展示，不改变机器可读的工具语义与结果。
+
+- `renderCall`：Search 显示工具名 + 截断的 query；Extract 显示工具名 + URL 数。参数尚未完成时只显示固定工具名占位符。
+- `renderResult` 优先检查 `isError`：折叠态只显示错误首行，展开态显示完整错误文本，均不读取 `details`。
+- `isPartial`（流式/部分结果）时只显示 `in progress…` 占位符，不读取可能未完成的结果。
+- 折叠态不显示 Envelope XML、snippet 或正文：Search 显示 `N hits · 截断 query`；Extract 显示 `N URLs · M pages · K failed`。`details` 缺失或畸形时回退固定摘要（`Search complete` / `Extract complete`）。
+- 展开态显示原 content 全文（仍带 `<untrusted_external_data>` 标记）。
+- 所有渲染文本先剥除 C0/C1 控制字符（含 ESC）；折叠摘要限制可见宽度，展开正文由 TUI 按终端宽度无损换行。
+- 不展示 API key、Tavily 原始响应或内部 stack。
 
 ## 使用示例
 
@@ -110,11 +129,13 @@ Search Envelope 外层为 `<tavily_search>`，每条 hit 含 title、URL、snipp
 
 仅用户维护的 `config.json`。不写 Pi custom session entry。
 
+Pi 自身会按 session 持久化工具调用参数与结果（包括 `details`），因此 query、候选 URL、抽取 URL 与展示给模型的网页正文可能出现在 Pi session 文件中。
+
 ## 模式支持
 
 | 模式 | 行为 |
 | --- | --- |
-| TUI / RPC / JSON / print | 相同工具语义；无 UI 时跳过 notify |
+| TUI / RPC / JSON / print | 相同工具语义；`renderCall` / `renderResult` 只影响 TUI 展示；无 UI 时跳过 notify |
 
 所有模式都安全加载。工厂函数不启动进程、socket 或 timer。
 

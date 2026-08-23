@@ -1,5 +1,6 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { type Component, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { GoalConfigV1 } from "./config.js";
 import { GoalError, type GoalRef, type GoalView } from "./domain.js";
@@ -58,6 +59,80 @@ function mutationResult(runtime: GoalToolRuntime, context: ExtensionContext, goa
 	return Promise.resolve(resultFor(goal));
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function resultText(result: {
+	readonly content: readonly { readonly type: string; readonly text?: string }[];
+}): string {
+	return result.content
+		.filter(
+			(block): block is { readonly type: "text"; readonly text: string } =>
+				block.type === "text" && typeof block.text === "string",
+		)
+		.map((block) => block.text)
+		.join("\n");
+}
+
+function compactGoalLines(details: unknown): string[] | null {
+	if (!isRecord(details) || !("goal" in details)) return null;
+	if (details.goal === null) return ["No goal is currently set."];
+	if (!isRecord(details.goal) || typeof details.activation !== "string") return null;
+	const goal = details.goal;
+	if (
+		typeof goal.objective !== "string" ||
+		typeof goal.phase !== "string" ||
+		typeof goal.roundsStarted !== "number" ||
+		typeof goal.maxGoalRounds !== "number"
+	)
+		return null;
+	let blocker = "";
+	if (isRecord(goal.blockedReason) && typeof goal.blockedReason.code === "string") {
+		blocker = ` · ${goal.blockedReason.code}`;
+	}
+	const mark = goal.phase === "complete" ? "✓" : goal.phase === "blocked" ? "!" : goal.phase === "paused" ? "Ⅱ" : "◐";
+	return [
+		`Goal · ${goal.phase} · round ${goal.roundsStarted}/${goal.maxGoalRounds} · ${details.activation}${blocker}`,
+		`${mark} ${goal.objective}`,
+	];
+}
+
+class BoundedLinesComponent implements Component {
+	readonly #lines: readonly string[];
+
+	constructor(lines: readonly string[]) {
+		this.#lines = lines;
+	}
+
+	render(width: number): string[] {
+		return this.#lines.map((line) => truncateToWidth(line, Math.max(1, width)));
+	}
+
+	invalidate(): void {}
+}
+
+function renderGoalResult(
+	result: {
+		readonly content: readonly { readonly type: string; readonly text?: string }[];
+		readonly details?: unknown;
+	},
+	expanded: boolean,
+	theme: Theme,
+	isError: boolean,
+): Component {
+	const raw = resultText(result);
+	if (isError) {
+		if (expanded) return new Text(theme.fg("error", raw), 0, 0);
+		return new BoundedLinesComponent([theme.fg("error", raw.split("\n", 1)[0] ?? "Goal operation failed")]);
+	}
+	if (expanded) return new Text(theme.fg("text", raw), 0, 0);
+	const compact = compactGoalLines(result.details);
+	return new BoundedLinesComponent(
+		(compact ?? [raw]).map((line) => theme.fg(compact === null ? "muted" : "success", line)),
+	);
+}
+
 export function registerGoalTools(pi: { registerTool(tool: unknown): void }, runtime: GoalToolRuntime): void {
 	const promptGuidelines = [goalPolicyGuideline(runtime.config.blockedAfterConsecutiveRounds)];
 	pi.registerTool(
@@ -71,6 +146,12 @@ export function registerGoalTools(pi: { registerTool(tool: unknown): void }, run
 			execute(_toolCallId, _parameters, signal, _onUpdate, context) {
 				if (signal?.aborted) throw new Error("Operation aborted");
 				return Promise.resolve(resultFor(runtime.service.get(context)));
+			},
+			renderCall(_args, theme) {
+				return new BoundedLinesComponent([theme.fg("toolTitle", theme.bold("get_goal"))]);
+			},
+			renderResult(result, { expanded }, theme, context) {
+				return renderGoalResult(result, expanded, theme, context.isError);
 			},
 		}),
 	);
@@ -94,6 +175,15 @@ export function registerGoalTools(pi: { registerTool(tool: unknown): void }, run
 				runtime.authority(context);
 				const view = runtime.service.create(context, parameters.objective, parameters.max_goal_rounds);
 				return mutationResult(runtime, context, view);
+			},
+			renderCall(args, theme) {
+				const objective = args.objective.trim();
+				return new BoundedLinesComponent([
+					`${theme.fg("toolTitle", theme.bold("create_goal"))}${objective.length === 0 ? "" : ` ${theme.fg("muted", `· ${objective}`)}`}`,
+				]);
+			},
+			renderResult(result, { expanded }, theme, context) {
+				return renderGoalResult(result, expanded, theme, context.isError);
 			},
 		}),
 	);
@@ -183,6 +273,14 @@ export function registerGoalTools(pi: { registerTool(tool: unknown): void }, run
 					message: parameters.blocked_reason as string,
 				});
 				return mutationResult(runtime, context, view);
+			},
+			renderCall(args, theme) {
+				return new BoundedLinesComponent([
+					`${theme.fg("toolTitle", theme.bold("update_goal"))} ${theme.fg("muted", `· ${args.action}`)}`,
+				]);
+			},
+			renderResult(result, { expanded }, theme, context) {
+				return renderGoalResult(result, expanded, theme, context.isError);
 			},
 		}),
 	);

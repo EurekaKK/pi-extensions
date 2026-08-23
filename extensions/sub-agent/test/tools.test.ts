@@ -205,5 +205,24 @@ describe("sub-agent v2 parent tools", () => {
 
 		const listed = await list.execute("c3", { scope: "children" } as never, undefined, undefined, context("tui"));
 		expect(text(listed)).toContain("child-1 [ready]");
+		const collapsed =
+			list
+				.renderResult?.(listed, { expanded: false, isPartial: false }, theme, {
+					isError: false,
+					args: { scope: "children" },
+				})
+				.render(120)
+				.join("\n") ?? "";
+		expect(collapsed.trimEnd()).toBe("1 subagents");
+		expect(collapsed).not.toContain("child-1");
+		const expanded =
+			list
+				.renderResult?.(listed, { expanded: true, isPartial: false }, theme, {
+					isError: false,
+					args: { scope: "children" },
+				})
+				.render(120)
+				.join("\n") ?? "";
+		expect(expanded).toContain("child-1 [ready]");
 	});
 });

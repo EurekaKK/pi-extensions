@@ -4,9 +4,17 @@ import {
 	getAgentDir,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
+import {
+	PROGRESS_WIDGET_ATTACH_EVENT,
+	PROGRESS_WIDGET_RELEASE_EVENT,
+	PROGRESS_WIDGET_STATE_EVENT,
+	parseProgressWidgetAttach,
+	parseProgressWidgetRelease,
+} from "progress-widget-protocol";
 import { executeGoalCommand } from "./commands.js";
 import { type FileMutationQueue, type GoalConfigV1, initializeGoalConfig } from "./config.js";
 import { GoalDriver } from "./driver.js";
+import { renderGoalRoundMessage } from "./message-renderer.js";
 import { GoalService } from "./service.js";
 import { registerGoalTools } from "./tools.js";
 import { tryProjectGoalWidget } from "./widget.js";
@@ -25,26 +33,76 @@ function notify(context: ExtensionContext, message: string): void {
 	}
 }
 
-function projectStatus(context: ExtensionContext, service: GoalService): void {
-	try {
-		tryProjectGoalWidget(context, service.get(context));
-	} catch {
-		// UI projection and branch-read failures must not change Goal semantics.
-	}
-}
-
 export function registerGoalExtension(pi: ExtensionAPI, config: GoalConfigV1): void {
 	const service = new GoalService(pi, config.defaultMaxGoalRounds);
-	const driver = new GoalDriver(pi, service, {
-		onSettled: (context) => projectStatus(context, service),
+	let currentContext: ExtensionContext | undefined;
+	let attachedSessionId: string | undefined;
+
+	function projectStatus(context: ExtensionContext): void {
+		currentContext = context;
+		try {
+			const goal = service.get(context);
+			const sessionId = context.sessionManager.getSessionId();
+			if (attachedSessionId === sessionId) {
+				tryProjectGoalWidget(context, undefined);
+				pi.events.emit(PROGRESS_WIDGET_STATE_EVENT, {
+					version: 1,
+					source: "goal",
+					sessionId,
+					goal:
+						goal === undefined
+							? null
+							: {
+									id: goal.id,
+									objective: goal.objective,
+									phase: goal.phase,
+									roundsStarted: goal.roundsStarted,
+									maxGoalRounds: goal.maxGoalRounds,
+									activation: goal.activation,
+									...(goal.blockedReason === undefined
+										? {}
+										: {
+												blockedReason: {
+													code: goal.blockedReason.code,
+													message: goal.blockedReason.message,
+												},
+											}),
+								},
+				});
+				return;
+			}
+			tryProjectGoalWidget(context, goal);
+		} catch {
+			// UI projection and branch-read failures must not change Goal semantics.
+		}
+	}
+
+	pi.events.on(PROGRESS_WIDGET_ATTACH_EVENT, (value) => {
+		const attached = parseProgressWidgetAttach(value);
+		if (attached === null) return;
+		attachedSessionId = attached.sessionId;
+		if (currentContext?.sessionManager.getSessionId() === attached.sessionId) projectStatus(currentContext);
 	});
+
+	pi.events.on(PROGRESS_WIDGET_RELEASE_EVENT, (value) => {
+		const released = parseProgressWidgetRelease(value);
+		if (released === null || attachedSessionId !== released.sessionId) return;
+		attachedSessionId = undefined;
+		if (currentContext?.sessionManager.getSessionId() === released.sessionId) projectStatus(currentContext);
+	});
+
+	const driver = new GoalDriver(pi, service, {
+		onSettled: (context) => projectStatus(context),
+	});
+
+	pi.registerMessageRenderer("goal:round", renderGoalRoundMessage);
 
 	pi.registerCommand("goal", {
 		description: "Create, edit, pause, resume, clear, or view the same-session goal",
 		async handler(argumentsText, context) {
 			const text = executeGoalCommand(service, context, argumentsText);
 			notify(context, text);
-			projectStatus(context, service);
+			projectStatus(context);
 		},
 	});
 
@@ -52,7 +110,7 @@ export function registerGoalExtension(pi: ExtensionAPI, config: GoalConfigV1): v
 		service,
 		config,
 		onChanged(context) {
-			projectStatus(context, service);
+			projectStatus(context);
 		},
 		authority(context) {
 			return driver.authority(context);
@@ -60,17 +118,21 @@ export function registerGoalExtension(pi: ExtensionAPI, config: GoalConfigV1): v
 	});
 
 	pi.on("session_start", (_event, context) => {
+		currentContext = context;
 		service.disarm(context.sessionManager.getSessionId());
-		projectStatus(context, service);
+		projectStatus(context);
 	});
 
 	pi.on("session_tree", (_event, context) => {
+		currentContext = context;
 		service.disarm(context.sessionManager.getSessionId());
-		projectStatus(context, service);
+		projectStatus(context);
 	});
 
 	pi.on("session_shutdown", (_event, context) => {
 		tryProjectGoalWidget(context, undefined);
+		currentContext = undefined;
+		attachedSessionId = undefined;
 	});
 }
 

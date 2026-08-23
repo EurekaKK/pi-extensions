@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { FakePiHost } from "test-host";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,7 +15,20 @@ interface RegisteredTool {
 		toolCallId: string,
 		params: unknown,
 		signal: AbortSignal | undefined,
-	): Promise<{ readonly content: readonly { readonly type: string; readonly text?: string }[] }>;
+	): Promise<{
+		readonly content: readonly { readonly type: string; readonly text?: string }[];
+		readonly details?: unknown;
+	}>;
+	readonly renderCall?: (args: unknown, theme: Theme, context: unknown) => unknown;
+	readonly renderResult?: (
+		result: {
+			readonly content: readonly { readonly type: string; readonly text?: string }[];
+			readonly details?: unknown;
+		},
+		options: { readonly expanded: boolean; readonly isPartial: boolean },
+		theme: Theme,
+		context: unknown,
+	) => unknown;
 }
 
 class ToolHarness {
@@ -116,6 +129,8 @@ describe("tavily_search and tavily_extract", () => {
 		expect(inner).toContain("Snippet A");
 		expect(inner).toContain("0.91");
 		expect(text).not.toContain("skip-me");
+		expect(text).not.toContain("tavily_details_version");
+		expect(result.details).toEqual({ tavily_details_version: 1, tavily_hit_count: 2 });
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://api.tavily.com/search");
 		const body = await requestBody(fetchMock.mock.calls[0]?.[1]);
@@ -278,6 +293,12 @@ describe("tavily_search and tavily_extract", () => {
 		expect(inner).toContain("https://example.com/a");
 		expect(inner).toContain("Page body");
 		expect(inner).toContain("https://example.com/missing");
+		expect(result.details).toEqual({
+			tavily_details_version: 1,
+			tavily_url_count: 2,
+			tavily_page_count: 1,
+			tavily_failed_count: 1,
+		});
 		expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://api.tavily.com/extract");
 		const body = await requestBody(fetchMock.mock.calls[0]?.[1]);
 		expect(body).toMatchObject({
@@ -427,5 +448,63 @@ describe("tavily_search and tavily_extract", () => {
 		await harness.sessionStart();
 		expect(String(harness.notify.mock.calls[0]?.[0])).toMatch(/disabled/i);
 		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("registers compact TUI renderers that summarize from details without showing the envelope", async () => {
+		const fetchMock = vi.fn<typeof fetch>(async () =>
+			jsonResponse(200, {
+				results: [
+					{ title: "First", url: "https://example.com/a", content: "Snippet A", score: 0.91, id: "skip-me" },
+					{ title: "Second", url: "https://example.com/b", content: "Snippet B", score: 0.4 },
+				],
+			}),
+		);
+		const harness = new ToolHarness();
+		await loadTavilyWebSearch(harness.api, {
+			agentDir,
+			withFileMutationQueue,
+			fetch: fetchMock,
+			readApiKey: () => "tvly-test",
+		});
+		const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
+		const render = (component: unknown): string => {
+			if (
+				typeof component !== "object" ||
+				component === null ||
+				typeof (component as { render?: unknown }).render !== "function"
+			) {
+				throw new Error("expected renderable component");
+			}
+			return (component as { render(width: number): string[] }).render(80).join("\n");
+		};
+
+		const search = harness.tool("tavily_search");
+		const extract = harness.tool("tavily_extract");
+		expect(search.renderCall).toBeTypeOf("function");
+		expect(search.renderResult).toBeTypeOf("function");
+		expect(extract.renderCall).toBeTypeOf("function");
+		expect(extract.renderResult).toBeTypeOf("function");
+
+		expect(render(search.renderCall?.({ query: "node lts" }, theme, { argsComplete: true }))).toContain("node lts");
+		expect(render(search.renderCall?.({ query: "node lts" }, theme, { argsComplete: false }))).not.toContain(
+			"node lts",
+		);
+
+		const searchResult = await search.execute("call-1", { query: "node lts" }, undefined);
+		const collapsed = render(
+			search.renderResult?.(searchResult, { expanded: false, isPartial: false }, theme, {
+				args: { query: "node lts" },
+				argsComplete: true,
+				isError: false,
+			}),
+		);
+		expect(collapsed).toContain("2 hits");
+		expect(collapsed).toContain("node lts");
+		expect(collapsed).not.toContain("Snippet A");
+		expect(collapsed).not.toContain("<tavily_search>");
+
+		expect(render(extract.renderCall?.({ urls: ["https://example.com/a"] }, theme, { argsComplete: true }))).toContain(
+			"1 URL",
+		);
 	});
 });

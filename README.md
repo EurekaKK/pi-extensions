@@ -1,6 +1,6 @@
 # pi-extensions
 
-用于开发和维护 [Pi coding agent](https://pi.dev/) extensions 的 monorepo。每个 extension 都是独立的 Pi package，可以单独安装、运行、测试和发布。
+用于开发和维护 [Pi coding agent](https://pi.dev/) extensions 的 monorepo。每个 extension 都是独立维护的 Pi package；安装时可通过显式依赖组成 closure，运行、测试、版本与发布边界仍由各 package 自己负责。
 
 ## 文档职责
 
@@ -50,12 +50,17 @@ pi-extensions/
 # 安装或更新（复制 + pi install），可一次传多个名字
 scripts/install-extension.sh todo goal
 
-# 卸载
+# 卸载（脚本不处理卸载）
 pi remove ~/.pi/agent/my-extensions/todo
 rm -rf ~/.pi/agent/my-extensions/todo
 ```
 
-- 修改代码后重新运行脚本即可同步副本；重启 Pi 或在会话内 `/reload` 后生效。
+- 若 extension 在 package.json 中声明了 `piExtensionDependencies`（对其他 extension 的安装期
+  依赖），脚本会递归解析全部请求根的依赖 closure：检测未知名字、自依赖和环，按「依赖优先」的
+  稳定拓扑顺序把依赖 extension 也逐个镜像到 `~/.pi/agent/my-extensions/<name>/` 并分别
+  `pi install`；多个请求根与菱形依赖只处理一次。任何校验失败时脚本不会写入任何文件。
+- 修改代码后重新运行脚本即可同步副本（按内容比较，已安装副本也能正确更新）；重启 Pi 或在会话内
+  `/reload` 后生效。
 - `@earendil-works/*` core 包由 Pi 自带（声明为 `peerDependencies`），副本无需 `npm install`。
 - 各 extension 的启用/停用（`pi config`）与状态文件位置见各自 README。
 
@@ -66,7 +71,8 @@ rm -rf ~/.pi/agent/my-extensions/todo
 1. 从 `templates/extension/` 创建到 `extensions/<kebab-case-name>/`。
 2. 使用 TypeScript、ESM、Biome、严格类型检查和 Vitest。
 3. 在自己的 `package.json` 中显式声明 Pi extension 入口和全部依赖。
-4. 保持独立，不直接引用其他 extension 的源码。
+4. 保持源码隔离，不直接引用其他 extension 的源码；需要安装期依赖时，在 `piExtensionDependencies`
+   中显式声明（要求与示例见 `templates/extension/README.md` 的「Extension 依赖」章）。
 5. 完成 README，并在下方索引中登记。
 
 workspace 建立后，统一使用以下命令：
@@ -91,6 +97,7 @@ npm test --workspaces
 | --- | --- | --- | --- |
 | `context-management` | experimental | 按 dsh 方式 spill、prune 并生成结构化 Checkpoint，接管 Pi 原生 compaction | [`extensions/context-management`](./extensions/context-management/) |
 | `goal` | experimental | 通过模型工具管理 session Goal，并由 Goal Round Driver 自动续跑 active goal | [`extensions/goal`](./extensions/goal/) |
+| `progress-widget` | experimental | 在输入栏上方统一投影 Goal、直接 Sub-agent Run 与 Todo，支持 Compact / Full View | [`extensions/progress-widget`](./extensions/progress-widget/) |
 | `sub-agent` | experimental | 在父 Pi 进程内运行 spawn/fork 子 Agent，支持后台 continuable 会话、report 与结算通知 | [`extensions/sub-agent`](./extensions/sub-agent/) |
 | `tavily-web-search` | experimental | 通过 Tavily Search/Extract 对接公开网页，结果包在 Tavily Envelope 中 | [`extensions/tavily-web-search`](./extensions/tavily-web-search/) |
 | `todo` | experimental | 通过 `todo_write` 每次全量替换模型任务列表，并提供按轮次清空的计划条 | [`extensions/todo`](./extensions/todo/) |

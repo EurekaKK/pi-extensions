@@ -3,8 +3,7 @@
 为 Pi 提供 dsh 风格的 session 目标管理。目标由模型工具和用户命令共同维护；active + armed 的目标在 Agent
 idle 后由 Goal Round Driver 自动继续，无需独立 evaluator。
 
-当前 goal 的 phase、round、activation 和 objective 通过 `goal.status` widget 在编辑器上方常驻显示，与 Todo
-进度区位于同一区域。
+当前 goal 的 phase、round、activation 和 objective 会投影到编辑器上方：启用 `progress-widget` 时发布只读快照供组合 widget 渲染；未启用时保留两行 `goal.status` Compact fallback widget。
 
 ## 状态
 
@@ -17,14 +16,9 @@ idle 后由 Goal Round Driver 自动继续，无需独立 evaluator。
 
 ```bash
 scripts/install-extension.sh goal
-# 等价于：
-#   rsync -a --delete --exclude node_modules --exclude .DS_Store \
-#     extensions/goal/ ~/.pi/agent/my-extensions/goal/
-#   rsync 本仓库内部依赖（packages/*）到副本的 node_modules/
-#   pi install ~/.pi/agent/my-extensions/goal
 ```
 
-本包依赖仓库内部的 `config-store` 包；Pi 对本地路径安装不运行 `npm install`，脚本会把依赖一并复制进副本。
+Pi 对本地路径安装不运行 `npm install`；仓库脚本会先解析完整安装计划，再镜像 package，并把本包声明的内部 package 代码依赖递归 vendor 进副本。
 
 使用 `pi config` 启用或停用。卸载：
 
@@ -34,6 +28,10 @@ rm -rf ~/.pi/agent/my-extensions/goal
 ```
 
 卸载不会修改已有 Pi session。
+
+## Extension 依赖
+
+无。
 
 ## 配置
 
@@ -64,7 +62,7 @@ rm -rf ~/.pi/agent/my-extensions/goal
 - `create_goal(objective, max_goal_rounds?)`：在当前直接人类轮次创建目标。
 - `update_goal(goal_id, revision, action, ...)`：edit / pause / resume / complete / blocked。
 
-所有更新必须使用 `get_goal` 返回的精确 `goal_id` 和 `revision`。三条工具共用一条 `promptGuidelines`，内容随 `blockedAfterConsecutiveRounds` 生成。
+所有更新必须使用 `get_goal` 返回的精确 `goal_id` 和 `revision`。三条工具共用一条 `promptGuidelines`，内容随 `blockedAfterConsecutiveRounds` 生成。TUI 工具卡折叠时显示语义化 Goal 摘要，展开后保留完整 JSON 工具结果。
 
 ## 用户命令
 
@@ -104,10 +102,11 @@ Continue working toward the objective in this same session...
 - 每个 round 消耗一次 `roundsStarted`。
 - 达到 `maxGoalRounds` 后自动 block，code 为 `round-limit`。
 - 模型完成目标时调用 `update_goal complete`；被阻塞时调用 `update_goal blocked`。
+- `goal:round` custom message 在 TUI 折叠为一行 round/objective 摘要，按 Pi `Ctrl+O` 展开后显示完整续跑指令；模型和 session 中的原始 content 不变。
 
 ## UI 进度区
 
-`goal.status` widget 位于编辑器上方：
+未启用 `progress-widget` 时，`goal.status` fallback widget 位于编辑器上方：
 
 - 第一行显示 phase、已开始 round/上限和 activation；blocked 时附带 blocker code。
 - 第二行显示 objective，并按 active、paused、blocked、complete 使用不同状态标记。
@@ -115,7 +114,7 @@ Continue working toward the objective in this same session...
 - active、paused、blocked 和 complete 都保留显示；只有 `/goal clear`、目标 branch 不存在 goal 或 session
   shutdown 时清除。
 
-TUI 使用宽度感知组件；RPC 通过 UI bridge 发送相同的纯文本两行。JSON 和 print 模式不调用 UI。
+TUI 使用宽度感知组件；RPC 通过 UI bridge 发送相同的纯文本两行。启用 `progress-widget` 后，本 extension 清除 fallback widget，并通过 `progress-widget:*` 事件发布 Goal 快照；收到 `progress-widget:release` 后恢复 fallback。JSON 和 print 模式不调用 UI。
 
 ## 恢复与 fork
 

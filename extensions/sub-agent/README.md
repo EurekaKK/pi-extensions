@@ -18,11 +18,9 @@ v2 移除了 v1 的 Guardian/Worker sidecar、IPC、mailbox 和 spool，全部 c
 
 ```bash
 scripts/install-extension.sh sub-agent
-# 等价于：
-#   rsync -a --delete --exclude node_modules --exclude .DS_Store \
-#     extensions/sub-agent/ ~/.pi/agent/my-extensions/sub-agent/
-#   pi install ~/.pi/agent/my-extensions/sub-agent
 ```
+
+Pi 对本地路径安装不运行 `npm install`；仓库脚本会先解析完整安装计划，再镜像 package，并把本包声明的内部 package 代码依赖递归 vendor 进副本。
 
 使用 `pi config` 启用或停用。卸载：
 
@@ -32,6 +30,10 @@ rm -rf ~/.pi/agent/my-extensions/sub-agent
 ```
 
 卸载不会删除配置或 child session 文件。
+
+## Extension 依赖
+
+无。
 
 ## 配置
 
@@ -99,6 +101,12 @@ rm -rf ~/.pi/agent/my-extensions/sub-agent
 
 continuable child 额外注册 `report`，父 Agent 不可见。
 
+UI 还注册：
+
+- `sub-agent:status` Compact fallback widget；存在活动直接 Sub-agent Run 时显示一行状态计数。
+- `subagent:report` / `subagent:settlement` message renderer；折叠态显示 description、outcome 和正文首行，按 Pi `Ctrl+O` 展开原始完整消息。
+- `progress-widget:*` event bus 状态发布与投影所有权握手。启用 `progress-widget` 时清除 fallback，由组合 widget 显示直接 children；收到 `progress-widget:release` 后恢复 fallback。
+
 ## 使用示例
 
 启动后台子 Agent：
@@ -141,7 +149,9 @@ subagent_fork({ "description": "follow-up review", "prompt": "审阅上一轮结
 - child `hasUI: false`，不能向用户提问或请求 UI 权限。
 - spawn child 看不到父对话；fork child 只继承父已完成轮次。
 - 父模型只收到 child 最终文本、`report` 和结算通知；child 中间步骤留在 child session。
-- `interrupt_agent` 只停当前轮次，保留 child、已排队消息和后代。
+- `interrupt_agent` 只停当前轮次，保留 child、已排队消息和后代；UI 先显示 `interrupting`，结算后记录 `interrupted`。
+- UI 按直接 child 的最新 Run 跟踪 `running`、`interrupting`、`completed`、`interrupted`、`failed`；continuable child 结算后仍可再次运行。
+- Sub-agent 区段在没有 `running` / `interrupting` Run 后隐藏；不统计 descendants，也不跨 parent session 恢复 UI 运行态。
 - 超过 `maxDepth` 的委派在启动时拒绝。
 
 ## 持久化与清理
@@ -157,12 +167,12 @@ continuable child session 保存在：
 
 ## 模式支持
 
-| 模式 | 前台 subagent / subagent_fork | 后台 continuable | list_agents | send_message / interrupt_agent |
-| --- | --- | --- | --- | --- |
-| TUI | 支持 | 支持 | 支持 | 支持 |
-| RPC | 支持 | 支持 | 支持 | 支持 |
-| JSON | 支持 | 不支持 | 支持 | 不支持 |
-| print | 支持 | 不支持 | 支持 | 不支持 |
+| 模式 | 前台 subagent / subagent_fork | 后台 continuable | list_agents | send_message / interrupt_agent | widget |
+| --- | --- | --- | --- | --- | --- |
+| TUI | 支持 | 支持 | 支持 | 支持 | fallback 或 `progress-widget` 组合投影 |
+| RPC | 支持 | 支持 | 支持 | 支持 | 通过 UI bridge |
+| JSON | 支持 | 不支持 | 支持 | 不支持 | 不显示 |
+| print | 支持 | 不支持 | 支持 | 不支持 | 不显示 |
 
 ## 开发
 

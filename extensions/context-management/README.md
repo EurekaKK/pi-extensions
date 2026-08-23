@@ -19,11 +19,9 @@ extension 只改模型可见投影，并把成功的 Checkpoint 持久化为原�
 
 ```bash
 scripts/install-extension.sh context-management
-# 等价于：
-#   rsync -a --delete --exclude node_modules --exclude .DS_Store \
-#     extensions/context-management/ ~/.pi/agent/my-extensions/context-management/
-#   pi install ~/.pi/agent/my-extensions/context-management
 ```
+
+Pi 对本地路径安装不运行 `npm install`；仓库脚本会先解析完整安装计划，再镜像 package，并把本包声明的内部 package 代码依赖递归 vendor 进副本。
 
 使用 `pi config` 启用或停用。卸载：
 
@@ -34,6 +32,10 @@ rm -rf ~/.pi/agent/my-extensions/context-management
 
 卸载不会删除 agent 配置、spill 文件或已写入 session 的 CompactionEntry。不要同时启用其他会改写 `context`
 或接管 compaction 的 extension。
+
+## Extension 依赖
+
+无。
 
 ## 配置
 

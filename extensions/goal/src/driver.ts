@@ -142,7 +142,13 @@ export class GoalDriver {
 					customType: GOAL_ROUND_MESSAGE_TYPE,
 					content,
 					display: true,
-					details: { goalId: goal.id, revision: goal.revision, round },
+					details: {
+						goalId: goal.id,
+						revision: goal.revision,
+						round,
+						maxGoalRounds: goal.maxGoalRounds,
+						objective: goal.objective,
+					},
 				},
 				{ triggerTurn: true },
 			);

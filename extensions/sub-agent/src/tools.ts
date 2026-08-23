@@ -1,6 +1,6 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { type Component, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { INTERRUPT_AGENT_TOOL_NAME, LIST_AGENTS_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "./constants.js";
 import type { SubAgentConfigV2, SubagentDelegationToolConfigV2 } from "./domain.js";
@@ -58,6 +58,20 @@ function resultText(result: {
 		.join("\n");
 }
 
+class BoundedLinesComponent implements Component {
+	readonly #lines: readonly string[];
+
+	constructor(lines: readonly string[]) {
+		this.#lines = lines;
+	}
+
+	render(width: number): string[] {
+		return this.#lines.map((line) => truncateToWidth(line, Math.max(1, width)));
+	}
+
+	invalidate(): void {}
+}
+
 function listText(entries: readonly SubagentListEntry[]): string {
 	if (entries.length === 0) return "(no subagents)";
 	return entries
@@ -110,24 +124,26 @@ export function registerParentTools(
 				},
 				renderCall(args, theme) {
 					const label = args.description.trim() || "unnamed delegation";
-					return new Text(`${theme.fg("toolTitle", theme.bold(name))} ${theme.fg("muted", `· ${label}`)}`, 0, 0);
+					return new BoundedLinesComponent([
+						`${theme.fg("toolTitle", theme.bold(name))} ${theme.fg("muted", `· ${label}`)}`,
+					]);
 				},
 				renderResult(result, { expanded }, theme, context) {
 					const label = context.args.description.trim() || "unnamed delegation";
 					const output = resultText(result);
 					if (context.isError) {
-						const visible = expanded ? output : (output.split("\n", 1)[0] ?? "Delegation failed");
-						return new Text(theme.fg("error", visible), 0, 0);
+						if (expanded) return new Text(theme.fg("error", output), 0, 0);
+						return new BoundedLinesComponent([theme.fg("error", output.split("\n", 1)[0] ?? "Delegation failed")]);
 					}
 					if (result.details?.background === true) {
 						const summary = theme.fg("success", `Started · ${label}`);
-						const child = expanded ? `\n${theme.fg("muted", `Agent: ${result.details.childId}`)}` : "";
-						return new Text(`${summary}${child}`, 0, 0);
+						if (!expanded) return new BoundedLinesComponent([summary]);
+						return new Text(`${summary}\n${theme.fg("muted", `Agent: ${result.details.childId}`)}`, 0, 0);
 					}
 					const summary = theme.fg("success", `Completed · ${label}`);
-					if (output.length === 0) return new Text(summary, 0, 0);
-					const visible = expanded ? output : (output.split("\n", 1)[0] ?? "");
-					return new Text(`${summary}\n${theme.fg("text", visible)}`, 0, 0);
+					if (output.length === 0) return new BoundedLinesComponent([summary]);
+					if (expanded) return new Text(`${summary}\n${theme.fg("text", output)}`, 0, 0);
+					return new BoundedLinesComponent([summary, theme.fg("text", output.split("\n", 1)[0] ?? "")]);
 				},
 			}),
 		);
@@ -202,6 +218,19 @@ export function registerParentTools(
 					content: [{ type: "text" as const, text: listText(entries) }],
 					details: { entries },
 				};
+			},
+			renderResult(result, { expanded }, theme, context) {
+				const output = resultText(result);
+				if (context.isError) {
+					return new Text(theme.fg("error", expanded ? output : (output.split("\n", 1)[0] ?? "List failed")), 0, 0);
+				}
+				if (expanded) return new Text(theme.fg("text", output), 0, 0);
+				const details = result.details as unknown;
+				const count =
+					typeof details === "object" && details !== null && "entries" in details && Array.isArray(details.entries)
+						? details.entries.length
+						: undefined;
+				return new Text(theme.fg("success", count === undefined ? "Subagent list ready" : `${count} subagents`), 0, 0);
 			},
 		}),
 	);
