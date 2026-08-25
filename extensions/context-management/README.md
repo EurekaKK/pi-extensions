@@ -1,7 +1,8 @@
 # context-management
 
 为 Pi 提供与 DeepSeek Harness 对齐的上下文压缩：在发送前 spill 过大的纯文本 tool result，压力到达后再
-按 head/tail 修剪 tool result，必要时用当前模型生成带固定结构的 Checkpoint。Pi session 仍是完整账本；
+按 head/tail 修剪 tool result，必要时用当前模型生成带固定结构的 Checkpoint，并在 settled history 较早达到
+准备阈值时生成一个内存内后台 candidate。Pi session 仍是完整账本；
 extension 只改模型可见投影，并把成功的 Checkpoint 持久化为原生 `CompactionEntry`。
 
 本 extension 不注册 LLM 工具，也不提供 Repository Memory、Evidence Pack 或 `evidence_read`。
@@ -68,7 +69,8 @@ rm -rf ~/.pi/agent/my-extensions/context-management
 
 - `auto`：是否在 `context` 屏障上自动 prune-then-summarize。`false` 时仍允许用户手动 `/compact`。
 - `thresholdRatio` / `retainRatio`：相对当前模型 `contextWindow`。默认在 80% 窗口触发，保留约 16% 作为
-  Protected Tail。`retainRatio` 必须小于 `thresholdRatio`。
+  Protected Tail。后台准备阈值内建为 `thresholdTokens - retainTokens`，默认即 64%；不增加配置项。
+  `retainRatio` 必须小于 `thresholdRatio`。
 - `maxTokens`：summarizer 输出上限，并与模型 `maxTokens` 取较小值。
 - `compactionRetries`：压力压缩在一次成功 checkpoint 后若仍超阈值，额外再试的次数。
 - `prune.*`：Unicode code point 计的 tool-result head/tail 修剪。修剪后长度必须 ≤ `thresholdChars`。
@@ -93,8 +95,12 @@ rm -rf ~/.pi/agent/my-extensions/context-management
 2. **Prune**：投影仍低于阈值时，只对已经修剪过的 `toolCallId` 重新应用 stub，避免大结果复活。达到
    `thresholdRatio` 后，对超过 `prune.thresholdChars` 的 tool result 保留 head + 固定标记 + tail。原生
    `/compact` 路径也会 prune。
-3. **Summarize**：prune 后仍超阈值，且存在可压缩前缀时，用当前模型 replay 最近一次请求的 system prompt、
-   active tools 和待压缩消息，再追加固定的八段 Compact 指令。输出经 framing 后替换前缀：
+3. **Prepare**：TUI/RPC 的 settled history 达到内建准备阈值后，冻结一个 safe compactable prefix，静默启动至多
+   一个后台 Compactor Request。candidate 只存内存；后续消息可继续 append。ready candidate 仅在压力点安装，
+   branch/tree/compaction/shutdown 不兼容时丢弃，失败后本 cycle 不自动重试。checkpoint 安装并结算后，如果
+   “上一份 checkpoint + 新 history”再次达到准备阈值，就立即开始下一 cycle；不维护候选队列。
+4. **Summarize**：prune 后仍超阈值，且没有兼容 ready candidate 时，用当前模型 replay 最近一次请求的 system prompt、
+   上一份 checkpoint 和待压缩消息；Compactor 的 `tools` 固定为空，再追加八段 Compact 指令。输出经 framing 后替换前缀：
    preamble + `<compacted-summary>` + 正文 + `</compacted-summary>`。Checkpoint 必须比被替换前缀更短，否则
    失败。成功候选先进入内存投影，idle 后再通过 `context.compact()` 写成 CompactionEntry。
 
@@ -105,17 +111,17 @@ rm -rf ~/.pi/agent/my-extensions/context-management
 
 ## 状态命令
 
-`/context-management-status` 只读显示当前窗口、阈值、retain、投影、校准、tail range、已修剪 tool result
-数量和 checkpoint 状态。它不触发 spill、prune 或 summarization。
+`/context-management-status` 只读显示当前窗口、阈值、retain、投影、校准、tail range、已修剪 tool result、
+checkpoint 和后台 candidate 的 `idle/preparing/ready/installed/discarded/failed` 状态。它不触发任何状态变化。
 
 ## 模式支持
 
 | 模式 | 行为 |
 | --- | --- |
-| TUI | 完整支持；同步压缩时显示 working message；通知可用 |
-| RPC | 相同 spill / prune / compact 语义，不等待终端 UI |
-| JSON | 相同语义，不显示 spinner |
-| print | 相同语义，不等待交互 UI |
+| TUI | 完整支持后台准备；仅同步 fallback 显示 working message；通知可用 |
+| RPC | 完整支持后台准备；相同 spill / prune / compact 语义 |
+| JSON | deterministic reduction 与必要的同步 compaction；不启动后台 candidate |
+| print | deterministic reduction 与必要的同步 compaction；不启动后台 candidate |
 
 所有模式都安全加载。无 UI 时跳过 notify / working message。
 
@@ -126,9 +132,12 @@ rm -rf ~/.pi/agent/my-extensions/context-management
   另加一次机械 validation regeneration。请求响应 `AbortSignal`。
 - spill 文件位于 `<agentDir>/context-management/spill/<session-hash>/`，目录 `0700`、文件 `0600`。内容是
   工具输出明文。卸载或结束 session 后不会自动删除；不再需要时可手动删除该目录。
-- Checkpoint 只通过 Pi 原生 CompactionEntry 持久化。estimator calibration、pending checkpoint 和已修剪
-  `toolCallId` 只存在内存，随 session/tree/shutdown 重置。
-- 不提供 Memory、Evidence 引用、后台预压缩、独立便宜 summarizer，也不改写 Pi session 中的原始消息。
+- Checkpoint 只通过 Pi 原生 CompactionEntry 持久化。estimator calibration、prepared/pending checkpoint 和已修剪
+  `toolCallId` 只存在内存，随 session/tree/shutdown 重置。每个 cycle 最多一个 candidate，不 rebase、不持久化；
+  安装后的 checkpoint 可以作为下一 cycle 的输入继续滚动压缩。
+- 不提供 Memory、Evidence 引用、独立便宜 summarizer，也不改写 Pi session 中的原始消息。
+- 可选进程内 observer `Symbol.for("pi.context-management.candidate-lifecycle.v1")` 只发出 versioned
+  `started/ready/installed/discarded/failed` 与短 detail；没有监听器时零副作用，监听器异常被忽略，不含正文、路径、ID 或 fingerprint。
 - 不假设自己与其他 context/compaction owner 共存。
 
 ## 持久化

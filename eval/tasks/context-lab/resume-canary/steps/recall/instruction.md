@@ -1,0 +1,1 @@
+Without reading files, environment variables, or external sources, recall the exact `CTX_CANARY_...` token that the user gave you in the previous step of this same conversation. Use `write` to place only that token in `/app/recalled.txt`, then finish.

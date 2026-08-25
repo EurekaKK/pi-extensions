@@ -20,12 +20,18 @@ from pi_eval_harness.constants import (
     PI_PACKAGE,
     PI_VERSION,
     REMOTE_AGENT_DIR,
+    REMOTE_CONTEXT_SCENARIO_TOOLS,
+    REMOTE_CONTEXT_TRACE,
+    REMOTE_EXTENSION_INSTALLER,
+    REMOTE_EXTENSION_REPO_ROOT,
     REMOTE_EXTENSION_ROOT,
+    REMOTE_EXTENSION_SOURCE_ROOT,
     REMOTE_MODEL_KEY_FILE,
     REMOTE_TAVILY_KEY_FILE,
     REMOTE_TUI_DRIVER,
     TAVILY_EXTENSION,
 )
+from pi_eval_harness.context_trace import TRACE_SCHEMA, trace_path
 
 INSTRUCTION = "Inspect the environment.\n\nComplete and verify the requested task."
 
@@ -92,8 +98,306 @@ def test_run_submits_original_instruction_to_tui(tmp_path: Path) -> None:
     assert env["PI_EVAL_MODEL_KEY_FILE"] == REMOTE_MODEL_KEY_FILE
     assert "DEEPSEEK_API_KEY" not in env
     assert "PI_EVAL_APPEND_SYSTEM_PROMPT" not in env
+    assert "PI_EVAL_CONTEXT_TRACE" not in env
+    assert "PI_EVAL_RESUME" not in env
     assert "--no-context-files" not in command
     assert context.is_empty()
+
+
+def test_resume_continues_the_previous_pi_session(tmp_path: Path) -> None:
+    environment = RecordingEnvironment()
+    context = AgentContext()
+    instruction = "Recall CTX_CANARY_RESUME_ALPHA from the previous step."
+    agent = make_agent(tmp_path)
+
+    asyncio.run(agent.resume(instruction, environment, context))
+
+    assert agent.SUPPORTS_RESUME is True
+    assert len(environment.calls) == 1
+    env = environment.calls[0]["env"]
+    assert isinstance(env, dict)
+    assert env["PI_EVAL_RESUME"] == "1"
+    command = str(environment.calls[0]["command"])
+    assert base64.b64encode(instruction.encode()).decode() in command
+
+
+def test_context_trace_key_is_stable_across_run_and_resume(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path, context_trace=True)
+    run_environment = RecordingEnvironment()
+    resume_environment = RecordingEnvironment()
+
+    asyncio.run(agent.run("first", run_environment, AgentContext()))
+    asyncio.run(agent.resume("second", resume_environment, AgentContext()))
+
+    run_env = run_environment.calls[0]["env"]
+    resume_env = resume_environment.calls[0]["env"]
+    assert isinstance(run_env, dict)
+    assert isinstance(resume_env, dict)
+    assert (
+        run_env["PI_EVAL_CONTEXT_TRACE_KEY"] == resume_env["PI_EVAL_CONTEXT_TRACE_KEY"]
+    )
+
+
+def test_context_trace_is_opt_in_and_uses_agent_log_path(tmp_path: Path) -> None:
+    environment = RecordingEnvironment()
+    agent = make_agent(tmp_path, context_trace=True)
+
+    asyncio.run(agent.run(INSTRUCTION, environment, AgentContext()))
+
+    env = environment.calls[0]["env"]
+    assert isinstance(env, dict)
+    assert env["PI_EVAL_CONTEXT_TRACE"] == REMOTE_CONTEXT_TRACE
+    assert isinstance(env["PI_EVAL_CONTEXT_TRACE_KEY"], str)
+    assert len(env["PI_EVAL_CONTEXT_TRACE_KEY"]) == 64
+
+    context = AgentContext()
+    agent.populate_context_post_run(context)
+    assert context.metadata is not None
+    assert context.metadata["context_trace_enabled"] is True
+
+
+def test_context_trace_rejects_non_boolean_values(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="context_trace"):
+        make_agent(tmp_path, context_trace="yes")
+    with pytest.raises(ValueError, match="context_trace_strict"):
+        make_agent(tmp_path, context_trace_strict=True)
+    with pytest.raises(ValueError, match="context_trace_expect_spill"):
+        make_agent(tmp_path, context_trace_expect_spill=True)
+    with pytest.raises(ValueError, match="context_trace_expect_spill"):
+        make_agent(
+            tmp_path,
+            context_trace=True,
+            context_trace_expect_spill="yes",
+        )
+    with pytest.raises(ValueError, match="context_trace_expect_prune"):
+        make_agent(tmp_path, context_trace_expect_prune=True)
+    with pytest.raises(ValueError, match="context_trace_expect_prune"):
+        make_agent(
+            tmp_path,
+            context_trace=True,
+            context_trace_expect_prune="yes",
+        )
+    with pytest.raises(ValueError, match="context_trace_expect_checkpoint"):
+        make_agent(tmp_path, context_trace_expect_checkpoint=True)
+    with pytest.raises(ValueError, match="context_trace_expect_checkpoint"):
+        make_agent(
+            tmp_path,
+            context_trace=True,
+            context_trace_expect_checkpoint="yes",
+        )
+    with pytest.raises(ValueError, match="context_trace_expect_prepared_checkpoint"):
+        make_agent(tmp_path, context_trace_expect_prepared_checkpoint=True)
+    with pytest.raises(ValueError, match="context_trace_expect_rolling_checkpoint"):
+        make_agent(tmp_path, context_trace_expect_rolling_checkpoint=True)
+
+
+def test_context_trace_analysis_is_added_to_post_run_metadata(tmp_path: Path) -> None:
+    path = trace_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "data": {},
+                "event": "agent_settled",
+                "leaf_hash": None,
+                "run_id": "run-1",
+                "schema": TRACE_SCHEMA,
+                "seq": 1,
+                "session_hash": "session",
+                "timestamp": "2026-08-24T00:00:00.000Z",
+            }
+        )
+        + "\n"
+    )
+    context = AgentContext()
+
+    make_agent(tmp_path, context_trace=True).populate_context_post_run(context)
+
+    assert context.metadata is not None
+    assert context.metadata["context_trace_records"] == 1
+    analysis = context.metadata["context_trace"]
+    assert isinstance(analysis, dict)
+    invariants = analysis["invariants"]
+    assert isinstance(invariants, dict)
+    assert invariants["passed"] is False
+    assert {item["check"] for item in invariants["violations"]} == {
+        "context_observed",
+        "provider_request_observed",
+    }
+
+
+def test_context_trace_records_spill_expectation_in_metadata(tmp_path: Path) -> None:
+    context = AgentContext()
+
+    make_agent(
+        tmp_path,
+        context_trace=True,
+        context_trace_expect_spill=True,
+    ).populate_context_post_run(context)
+
+    assert context.metadata is not None
+    assert context.metadata["context_trace_expect_spill"] is True
+
+
+def test_context_trace_records_prune_expectation_in_metadata(tmp_path: Path) -> None:
+    context = AgentContext()
+
+    make_agent(
+        tmp_path,
+        context_trace=True,
+        context_trace_expect_prune=True,
+    ).populate_context_post_run(context)
+
+    assert context.metadata is not None
+    assert context.metadata["context_trace_expect_prune"] is True
+
+
+def test_context_trace_records_checkpoint_expectation_in_metadata(
+    tmp_path: Path,
+) -> None:
+    context = AgentContext()
+
+    make_agent(
+        tmp_path,
+        context_trace=True,
+        context_trace_expect_checkpoint=True,
+    ).populate_context_post_run(context)
+
+    assert context.metadata is not None
+    assert context.metadata["context_trace_expect_checkpoint"] is True
+
+
+def test_context_trace_records_prepared_checkpoint_expectation_in_metadata(
+    tmp_path: Path,
+) -> None:
+    context = AgentContext()
+
+    make_agent(
+        tmp_path,
+        context_trace=True,
+        context_trace_expect_prepared_checkpoint=True,
+    ).populate_context_post_run(context)
+
+    assert context.metadata is not None
+    assert context.metadata["context_trace_expect_prepared_checkpoint"] is True
+
+
+def test_context_trace_records_rolling_checkpoint_expectation_in_metadata(
+    tmp_path: Path,
+) -> None:
+    context = AgentContext()
+
+    make_agent(
+        tmp_path,
+        context_trace=True,
+        context_trace_expect_rolling_checkpoint=True,
+    ).populate_context_post_run(context)
+
+    assert context.metadata is not None
+    assert context.metadata["context_trace_expect_rolling_checkpoint"] is True
+
+
+def test_strict_context_trace_fails_post_run_on_invariant_violation(
+    tmp_path: Path,
+) -> None:
+    context = AgentContext()
+
+    with pytest.raises(RuntimeError, match="invariants"):
+        make_agent(
+            tmp_path,
+            context_trace=True,
+            context_trace_strict=True,
+        ).populate_context_post_run(context)
+
+    assert context.metadata is not None
+    assert context.metadata["context_trace"]["invariants"]["passed"] is False
+
+
+def test_context_scenario_tools_are_opt_in(tmp_path: Path) -> None:
+    environment = RecordingEnvironment()
+    agent = make_agent(tmp_path, context_scenario_tools=True)
+
+    asyncio.run(agent.run(INSTRUCTION, environment, AgentContext()))
+
+    env = environment.calls[0]["env"]
+    assert isinstance(env, dict)
+    assert env["PI_EVAL_CONTEXT_SCENARIO_TOOLS"] == "1"
+    assert REMOTE_CONTEXT_SCENARIO_TOOLS.endswith("/context-scenario-tools/index.mjs")
+
+
+def test_context_scenario_tools_reject_non_boolean_values(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="context_scenario_tools"):
+        make_agent(tmp_path, context_scenario_tools="yes")
+
+
+def test_background_followup_requires_checkpoint_eval_dependencies(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="context_background_followup"):
+        make_agent(tmp_path, context_background_followup="follow up")
+
+
+def test_background_followup_is_base64_encoded_in_runtime_env(tmp_path: Path) -> None:
+    followup = "CTX_CANARY_EXPECT_PREPARED_CHECKPOINT_BASELINE_MS_54640"
+    environment = RecordingEnvironment()
+    agent = make_agent(
+        tmp_path,
+        extensions=["context-management"],
+        context_trace=True,
+        context_scenario_tools=True,
+        context_background_followup=followup,
+    )
+
+    asyncio.run(agent.run(INSTRUCTION, environment, AgentContext()))
+
+    env = environment.calls[0]["env"]
+    assert isinstance(env, dict)
+    assert (
+        env["PI_EVAL_BACKGROUND_FOLLOWUP_BASE64"]
+        == base64.b64encode(followup.encode()).decode()
+    )
+    assert followup not in str(environment.calls[0]["command"])
+
+
+def test_background_followup_list_is_numbered_in_runtime_env(tmp_path: Path) -> None:
+    followups = ["first follow-up", "second follow-up"]
+    environment = RecordingEnvironment()
+    agent = make_agent(
+        tmp_path,
+        extensions=["context-management"],
+        context_trace=True,
+        context_scenario_tools=True,
+        context_background_followups=followups,
+    )
+
+    asyncio.run(agent.run(INSTRUCTION, environment, AgentContext()))
+
+    env = environment.calls[0]["env"]
+    assert isinstance(env, dict)
+    assert env["PI_EVAL_BACKGROUND_FOLLOWUP_COUNT"] == "2"
+    assert (
+        env["PI_EVAL_BACKGROUND_FOLLOWUP_1_BASE64"]
+        == base64.b64encode(followups[0].encode()).decode()
+    )
+    assert (
+        env["PI_EVAL_BACKGROUND_FOLLOWUP_2_BASE64"]
+        == base64.b64encode(followups[1].encode()).decode()
+    )
+    assert "PI_EVAL_BACKGROUND_FOLLOWUP_BASE64" not in env
+
+
+def test_eval_variant_separates_harbor_agent_identity(tmp_path: Path) -> None:
+    native = make_agent(tmp_path, eval_variant="native")
+    managed = make_agent(tmp_path, eval_variant="context-management")
+
+    assert native.to_agent_info().name == "pi-tui-native"
+    assert managed.to_agent_info().name == "pi-tui-context-management"
+    assert native.model_name == managed.model_name
+
+
+def test_eval_variant_rejects_non_kebab_names(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="eval_variant"):
+        make_agent(tmp_path, eval_variant="Not Valid")
 
 
 def test_install_pins_pi_and_skips_extensions_when_list_is_empty(
@@ -123,15 +427,13 @@ def test_install_and_run_load_named_extensions_in_order(tmp_path: Path) -> None:
 
     asyncio.run(agent.install(environment))
     install_command = str(environment.calls[-1]["command"])
-    last_index = -1
     for name in extensions:
-        package = f"{REMOTE_EXTENSION_ROOT}/{name}"
-        install_line = f"pi install {package} --approve"
-        assert install_line in install_command
-        position = install_command.index(install_line)
-        assert position > last_index
-        last_index = position
+        package = f"{REMOTE_EXTENSION_SOURCE_ROOT}/{name}"
+        assert f"test -f {package}/package.json" in install_command
         assert f"test -f {package}/index.ts" in install_command
+    requested = " ".join(extensions)
+    assert f"bash {REMOTE_EXTENSION_INSTALLER} {requested}" in install_command
+    assert "pi install " not in install_command
     assert "goal" not in install_command
     assert TAVILY_EXTENSION not in install_command
     assert "config.json" not in install_command
@@ -149,6 +451,21 @@ def test_install_and_run_load_named_extensions_in_order(tmp_path: Path) -> None:
     run_command = str(environment.calls[0]["command"])
     assert "config.json" not in run_command
     assert TAVILY_EXTENSION not in run_command
+
+
+def test_install_uses_repo_installer_for_internal_package_vendoring(
+    tmp_path: Path,
+) -> None:
+    environment = RecordingEnvironment()
+    agent = make_agent(tmp_path, extensions=["context-management"])
+
+    asyncio.run(agent.install(environment))
+
+    install_command = str(environment.calls[-1]["command"])
+    assert f"PI_EXTENSIONS_REPO_ROOT={REMOTE_EXTENSION_REPO_ROOT}" in install_command
+    assert f"PI_AGENT_DIR={REMOTE_AGENT_DIR}" in install_command
+    assert f"{REMOTE_EXTENSION_INSTALLER} context-management" in install_command
+    assert "pi install /opt/pi-extensions/context-management" not in install_command
 
 
 def test_tavily_key_is_exported_only_when_that_extension_is_listed(

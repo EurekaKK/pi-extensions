@@ -4,7 +4,12 @@ import { join } from "node:path";
 
 const sessionsDir = process.argv[2];
 if (typeof sessionsDir !== "string" || sessionsDir.length === 0) {
-	console.error("usage: goal-settlement.mjs SESSIONS_DIR");
+	console.error("usage: goal-settlement.mjs SESSIONS_DIR [MINIMUM_STOP_COUNT]");
+	process.exit(64);
+}
+const minimumStopCount = Number.parseInt(process.argv[3] ?? "0", 10);
+if (!Number.isSafeInteger(minimumStopCount) || minimumStopCount < 0) {
+	console.error("MINIMUM_STOP_COUNT must be a non-negative integer");
 	process.exit(64);
 }
 
@@ -53,6 +58,8 @@ function latestGoalPhase(change, current) {
 const entries = readEntries(sessionsDir);
 let phase;
 let lastStopIndex = -1;
+let lastUserIndex = -1;
+let stopCount = 0;
 let roundAfterStop = false;
 
 for (let index = 0; index < entries.length; index += 1) {
@@ -67,14 +74,19 @@ for (let index = 0; index < entries.length; index += 1) {
 		continue;
 	}
 	if (entry.type !== "message" || !isRecord(entry.message)) continue;
+	if (entry.message.role === "user") {
+		lastUserIndex = index;
+		continue;
+	}
 	if (entry.message.role === "assistant" && entry.message.stopReason === "stop") {
+		stopCount += 1;
 		lastStopIndex = index;
 		roundAfterStop = false;
 	}
 }
 
 let state = "running";
-if (lastStopIndex >= 0) {
+if (stopCount > minimumStopCount && lastStopIndex >= 0 && lastStopIndex > lastUserIndex) {
 	if (phase !== "active") state = "quit";
 	else if (roundAfterStop) state = "driven";
 	else state = "armed";

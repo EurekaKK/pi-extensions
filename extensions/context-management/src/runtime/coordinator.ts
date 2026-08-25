@@ -20,8 +20,9 @@ import type { ContextManagementConfigV1 } from "../config.js";
 import { ContextManagementError, errorMessage, throwIfAborted } from "../errors.js";
 import { applyPruneToMessages } from "../prune.js";
 import { deriveContextBudget } from "./budget.js";
+import { emitCandidateLifecycle } from "./candidate-observer.js";
 import { type CompiledContext, compileContext } from "./compiler.js";
-import type { RuntimeState } from "./state.js";
+import type { CandidateLifecyclePhase, RuntimeState } from "./state.js";
 
 type AgentMessage = ContextEvent["messages"][number];
 
@@ -93,6 +94,8 @@ export class ContextCoordinator {
 	readonly state: RuntimeState;
 	#installRequested = false;
 	#compacting = false;
+	#preparationAttempted = false;
+	#preparationController: AbortController | null = null;
 
 	constructor(pi: ExtensionAPI, state: RuntimeState, config: ContextManagementConfigV1) {
 		this.#pi = pi;
@@ -111,6 +114,7 @@ export class ContextCoordinator {
 	}
 
 	async context(event: ContextEvent, context: ExtensionContext): Promise<{ messages: AgentMessage[] }> {
+		let currentProjection = event.messages.map((message) => structuredClone(message));
 		try {
 			throwIfAborted(combinedSignal(this.state, context));
 			this.#resolveCurrentRunEntry(context);
@@ -119,6 +123,7 @@ export class ContextCoordinator {
 			}
 
 			let messages = this.#prune(event.messages, false);
+			currentProjection = messages.map((message) => structuredClone(message));
 			let compiled = compileContext({
 				pi: this.#pi,
 				context,
@@ -128,6 +133,7 @@ export class ContextCoordinator {
 			});
 			if (this.#config.auto && compiled.overThreshold) {
 				messages = this.#prune(messages, true);
+				currentProjection = messages.map((message) => structuredClone(message));
 				compiled = compileContext({
 					pi: this.#pi,
 					context,
@@ -138,14 +144,25 @@ export class ContextCoordinator {
 			}
 
 			if (this.#config.auto && compiled.overThreshold && compiled.compactable !== null && !this.#compacting) {
-				compiled = await this.#compactCompiled(compiled, context);
+				if (this.#installPrepared(context)) {
+					compiled = compileContext({
+						pi: this.#pi,
+						context,
+						eventMessages: compiled.messages,
+						state: this.state,
+						config: this.#config,
+					});
+				}
+				if (compiled.overThreshold) {
+					this.#discardPreparation("blocking pressure requires synchronous fallback");
+					compiled = await this.#compactCompiled(compiled, context);
+				}
 			}
 
 			this.state.blockingState = null;
 			this.state.lastRawEstimate = compiled.rawEstimate;
 			this.state.lastRequestModel =
 				context.model === undefined ? null : { provider: context.model.provider, id: context.model.id };
-			this.state.lastSafeProjection = compiled.messages.map((message) => structuredClone(message));
 			return { messages: compiled.messages };
 		} catch (error) {
 			if (error instanceof ContextManagementError && error.code === "context_management.operation_aborted") {
@@ -154,11 +171,7 @@ export class ContextCoordinator {
 			const code = failureCode(error, "context_management.context_estimate_failure");
 			this.state.blockingState = code;
 			notify(context, `Context compaction skipped [${code}]: ${errorMessage(error)}`, "warning");
-			const fallback =
-				this.state.lastSafeProjection.length === 0
-					? event.messages.map((message) => structuredClone(message))
-					: this.state.lastSafeProjection.map((message) => structuredClone(message));
-			return { messages: fallback };
+			return { messages: currentProjection };
 		}
 	}
 
@@ -184,7 +197,9 @@ export class ContextCoordinator {
 		const pending = this.state.pendingCheckpoint;
 		if (pending !== undefined && compatible(this.state, pending, context)) {
 			this.#requestInstall(context, pending);
+			return;
 		}
+		this.#maybePrepare(context);
 	}
 
 	async beforeCompact(
@@ -197,8 +212,16 @@ export class ContextCoordinator {
 			if (pending !== undefined && compatible(this.state, pending, context)) {
 				return { compaction: candidateCompactionResult(pending) };
 			}
+			const prepared = this.state.preparedCheckpoint;
+			if (prepared !== undefined && compatible(this.state, prepared, context)) {
+				this.state.preparedCheckpoint = undefined;
+				this.#installInMemory(prepared);
+				this.#setCandidateLifecycle("installed");
+				return { compaction: candidateCompactionResult(prepared) };
+			}
 
 			if (!this.#config.auto && event.reason !== "manual") return { cancel: true };
+			this.#discardPreparation("native compaction requires synchronous fallback");
 
 			const nativeSelection = selectVisibleCompactable(
 				context,
@@ -238,24 +261,31 @@ export class ContextCoordinator {
 	}
 
 	sessionCompact(event: SessionCompactEvent, context: ExtensionContext): void {
+		this.#discardPreparation("checkpoint installed");
 		this.state.installedCheckpoint = restoreLatestCheckpoint(context.sessionManager.getBranch());
+		this.state.preparedCheckpoint = undefined;
 		this.state.pendingCheckpoint = undefined;
 		this.state.branchEpoch += 1;
+		this.#preparationAttempted = false;
+		this.#setCandidateLifecycle("idle");
 		this.#installRequested = false;
 		if (!event.fromExtension && context.mode === "tui") {
 			notify(context, "Context compaction was restored as a legacy checkpoint.", "warning");
 		}
+		this.#maybePrepare(context);
 	}
 
 	sessionTree(context: ExtensionContext): void {
 		this.state.branchEpoch += 1;
-		this.#resetBranch(context);
+		this.#resetBranch(context, "session tree changed", true);
 	}
 
 	shutdown(context: ExtensionContext): void {
+		this.#discardPreparation("session shutdown");
 		this.state.runtimeGeneration += 1;
 		this.state.shutdownController.abort();
 		this.state.pendingCheckpoint = undefined;
+		this.state.preparedCheckpoint = undefined;
 		this.state.currentRunParentEntryId = null;
 		this.state.currentRunEntryId = null;
 		if (context.hasUI) {
@@ -271,6 +301,98 @@ export class ContextCoordinator {
 		const pruned = applyPruneToMessages(messages, this.#config.prune, this.state.prunedToolCallIds, pruneOversized);
 		for (const id of pruned.newlyPrunedIds) this.state.prunedToolCallIds.add(id);
 		return pruned.messages;
+	}
+
+	#maybePrepare(context: ExtensionContext): void {
+		if (
+			!this.#config.auto ||
+			(context.mode !== "tui" && context.mode !== "rpc") ||
+			context.model === undefined ||
+			this.#preparationAttempted ||
+			this.#compacting ||
+			this.state.preparedCheckpoint !== undefined ||
+			this.state.pendingCheckpoint !== undefined
+		) {
+			return;
+		}
+		try {
+			const contextEntries = context.sessionManager.buildContextEntries();
+			const messages = this.#prune(
+				contextEntries.flatMap((entry) => sessionEntryToContextMessages(entry)),
+				false,
+			);
+			const compiled = compileContext({
+				pi: this.#pi,
+				context,
+				eventMessages: messages,
+				state: this.state,
+				config: this.#config,
+			});
+			const preparationTokens = compiled.budget.thresholdTokens - compiled.budget.retainTokens;
+			if (
+				compiled.correctedEstimate < preparationTokens ||
+				compiled.compactable === null ||
+				compiled.compactable.newlyEligibleMessages.length === 0
+			) {
+				return;
+			}
+
+			this.#preparationAttempted = true;
+			const controller = new AbortController();
+			this.#preparationController = controller;
+			this.#setCandidateLifecycle(
+				"preparing",
+				compiled.compactable.previousCheckpoint === undefined ? "fresh prefix" : "includes predecessor checkpoint",
+			);
+			const signal = AbortSignal.any([this.state.shutdownController.signal, controller.signal]);
+			void this.#generateFromSelection(
+				context,
+				compiled.compactable,
+				compiled.contextEntries,
+				compiled.correctedEstimate,
+				signal,
+			)
+				.then((candidate) => {
+					if (this.#preparationController !== controller) return;
+					if (!compatible(this.state, candidate, context)) {
+						this.#setCandidateLifecycle("discarded", "prepared prefix became incompatible");
+						return;
+					}
+					this.state.preparedCheckpoint = candidate;
+					this.#setCandidateLifecycle("ready");
+				})
+				.catch((error: unknown) => {
+					if (this.#preparationController !== controller || controller.signal.aborted) return;
+					this.#setCandidateLifecycle("failed", failureCode(error, "context_management.compactor_transport_failure"));
+				})
+				.finally(() => {
+					if (this.#preparationController === controller) this.#preparationController = null;
+				});
+		} catch (error) {
+			this.#preparationAttempted = true;
+			this.#setCandidateLifecycle("failed", failureCode(error, "context_management.context_estimate_failure"));
+		}
+	}
+
+	#installPrepared(context: ExtensionContext): boolean {
+		const candidate = this.state.preparedCheckpoint;
+		if (candidate === undefined) return false;
+		if (!compatible(this.state, candidate, context)) {
+			this.#discardPreparation("prepared prefix became incompatible");
+			return false;
+		}
+		this.state.preparedCheckpoint = undefined;
+		this.#installInMemory(candidate);
+		this.#setCandidateLifecycle("installed");
+		return true;
+	}
+
+	#discardPreparation(detail: string): void {
+		const active = this.#preparationController !== null || this.state.preparedCheckpoint !== undefined;
+		this.#preparationController?.abort();
+		this.#preparationController = null;
+		this.state.preparedCheckpoint = undefined;
+		if (active) this.#setCandidateLifecycle("discarded", detail);
 	}
 
 	async #compactCompiled(compiled: CompiledContext, context: ExtensionContext): Promise<CompiledContext> {
@@ -375,7 +497,21 @@ export class ContextCoordinator {
 		this.state.currentRunEntryId = root?.id ?? null;
 	}
 
-	#resetBranch(context: ExtensionContext): void {
+	#setCandidateLifecycle(phase: CandidateLifecyclePhase, detail: string | null = null): void {
+		this.state.candidateLifecycle = { phase, detail };
+		if (phase === "idle") return;
+		emitCandidateLifecycle({
+			phase: phase === "preparing" ? "started" : phase,
+			detail,
+		});
+	}
+
+	#resetBranch(context: ExtensionContext, discardDetail = "branch reset", preserveDiscarded = false): void {
+		const hadCandidate = this.#preparationController !== null || this.state.preparedCheckpoint !== undefined;
+		this.#discardPreparation(discardDetail);
+		this.#preparationAttempted = false;
+		if (!preserveDiscarded || !hadCandidate) this.#setCandidateLifecycle("idle");
+		this.state.preparedCheckpoint = undefined;
 		this.state.pendingCheckpoint = undefined;
 		this.state.installedCheckpoint = restoreLatestCheckpoint(context.sessionManager.getBranch());
 		this.state.prunedToolCallIds.clear();

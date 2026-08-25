@@ -1,0 +1,68 @@
+job_name: context-prepared-checkpoint-smoke-pi-tui
+jobs_dir: runs/context-prepared-checkpoint-smoke
+n_attempts: 1
+n_concurrent_trials: 1
+agents:
+  - import_path: pi_eval_harness.agent:PiTuiAgent
+    model_name: opencode-go/ox-alpha-free
+    extra_allowed_hosts:
+      - opencode.ai
+    resume_trajectory: false
+    kwargs:
+      thinking: high
+      context_trace: true
+      context_trace_strict: true
+      context_trace_expect_checkpoint: true
+      context_trace_expect_prepared_checkpoint: true
+      context_scenario_tools: true
+      context_background_followup: |
+        The trace grader requires `CTX_CANARY_EXPECT_CHECKPOINT_CHUNKS_9_BYTES_100000`, `CTX_CANARY_EXPECT_PREPARED_CHECKPOINT_BASELINE_MS_36962`, and `CTX_CANARY_REQUIRE_TOOL_WRITE`.
+
+        Without reading files, environment variables, source code, or external sources, recover the exact continuity token from the earliest seeded checkpoint-history chunk and the exact protected-tail token from the newest seeded checkpoint-history chunk.
+
+        Use `write` to create `/app/prepared-checkpoint-recalled.txt` with exactly this shape, substituting the two exact tokens:
+
+        ```text
+        checkpoint=complete
+        persistent=<earliest exact continuity token>
+        tail=<newest exact continuity token>
+        ```
+
+        Do not call any tool other than `write`, and finish only after the file is correct.
+      eval_variant: context-management
+      extensions:
+        - context-management
+environment:
+  mounts:
+    - type: bind
+      source: "${PI_EVAL_MODEL_KEY_FILE}"
+      target: /run/secrets/pi-eval-model-api-key
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: "${PI_EVAL_RUNTIME_DIR}"
+      target: /opt/pi-eval/runtime
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: "${PI_EVAL_EXTENSIONS_DIR}"
+      target: /opt/pi-extension-repo/extensions
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: "${PI_EVAL_PACKAGES_DIR}"
+      target: /opt/pi-extension-repo/packages
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: "${PI_EVAL_REPO_SCRIPTS_DIR}"
+      target: /opt/pi-extension-repo/scripts
+      read_only: true
+      bind:
+        create_host_path: false
+tasks:
+  - path: tasks/context-lab/prepared-checkpoint-continuity

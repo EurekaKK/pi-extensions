@@ -27,7 +27,19 @@ environment:
         create_host_path: false
     - type: bind
       source: "${PI_EVAL_EXTENSIONS_DIR}"
-      target: /opt/pi-extensions
+      target: /opt/pi-extension-repo/extensions
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: "${PI_EVAL_PACKAGES_DIR}"
+      target: /opt/pi-extension-repo/packages
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: "${PI_EVAL_REPO_SCRIPTS_DIR}"
+      target: /opt/pi-extension-repo/scripts
       read_only: true
       bind:
         create_host_path: false

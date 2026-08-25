@@ -32,6 +32,22 @@ function coverageIds(entries: readonly SessionEntry[], selection: CompactableSel
 	return Object.freeze(entries.slice(start, end).map((entry) => entry.id));
 }
 
+function compactorSource(selection: CompactableSelection): CompactableSelection["newlyEligibleMessages"] {
+	return Object.freeze([
+		...(selection.previousCheckpoint === undefined
+			? []
+			: [
+					{
+						role: "compactionSummary" as const,
+						summary: selection.previousCheckpoint,
+						tokensBefore: 0,
+						timestamp: 0,
+					},
+				]),
+		...selection.newlyEligibleMessages.map((message) => structuredClone(message)),
+	]);
+}
+
 export async function createCheckpointCandidate(input: {
 	readonly pi: ExtensionAPI;
 	readonly context: ExtensionContext;
@@ -47,8 +63,9 @@ export async function createCheckpointCandidate(input: {
 	readonly regenerateOnce: boolean;
 }): Promise<CheckpointCandidate> {
 	throwIfAborted(input.signal);
+	const sourceMessages = compactorSource(input.selection);
 	const sourceFingerprint = stableFingerprint(
-		input.selection.newlyEligibleMessages.map((message) => {
+		sourceMessages.map((message) => {
 			if (message.role === "toolResult") {
 				return { role: message.role, toolCallId: message.toolCallId, toolName: message.toolName };
 			}
@@ -61,8 +78,8 @@ export async function createCheckpointCandidate(input: {
 	const generated = await generateCheckpoint({
 		context: input.context,
 		pi: input.pi,
-		messages: input.selection.newlyEligibleMessages,
-		shadowedTokenCount: Math.max(1, estimateProjection(input.selection.newlyEligibleMessages)),
+		messages: sourceMessages,
+		shadowedTokenCount: Math.max(1, estimateProjection(sourceMessages)),
 		maxTokens: input.maxTokens,
 		calibration: input.calibration,
 		...(input.signal === undefined ? {} : { signal: input.signal }),

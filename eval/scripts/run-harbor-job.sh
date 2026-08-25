@@ -72,7 +72,7 @@ fi
 cd "${eval_root}"
 export PYTHONPATH="${eval_root}${PYTHONPATH:+:${PYTHONPATH}}"
 export_runtime_dir "${eval_root}"
-export_extensions_dir "${repo_root}"
+export_extension_repo_sources "${repo_root}"
 
 extension_names=()
 while IFS= read -r name; do

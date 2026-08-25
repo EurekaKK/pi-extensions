@@ -18,6 +18,13 @@ export interface RuntimeMetrics {
 	overThreshold: boolean;
 }
 
+export type CandidateLifecyclePhase = "idle" | "preparing" | "ready" | "installed" | "discarded" | "failed";
+
+export interface CandidateLifecycle {
+	phase: CandidateLifecyclePhase;
+	detail: string | null;
+}
+
 export interface RuntimeState {
 	runtimeGeneration: number;
 	branchEpoch: number;
@@ -25,13 +32,14 @@ export interface RuntimeState {
 	currentRunParentEntryId: string | null;
 	currentRunEntryId: string | null;
 	installedCheckpoint: InstalledCheckpoint | undefined;
+	preparedCheckpoint: CheckpointCandidate | undefined;
 	pendingCheckpoint: CheckpointCandidate | undefined;
+	candidateLifecycle: CandidateLifecycle;
 	prunedToolCallIds: Set<string>;
 	calibration: EstimatorCalibration;
 	blockingState: string | null;
 	lastRawEstimate: number | null;
 	lastRequestModel: { readonly provider: string; readonly id: string } | null;
-	lastSafeProjection: import("@earendil-works/pi-coding-agent").ContextEvent["messages"];
 	metrics: RuntimeMetrics | null;
 	shutdownController: AbortController;
 }
@@ -46,13 +54,14 @@ export function createRuntimeState(): RuntimeState {
 		currentRunParentEntryId: null,
 		currentRunEntryId: null,
 		installedCheckpoint: undefined,
+		preparedCheckpoint: undefined,
 		pendingCheckpoint: undefined,
+		candidateLifecycle: { phase: "idle", detail: null },
 		prunedToolCallIds: new Set(),
 		calibration: new EstimatorCalibration(),
 		blockingState: null,
 		lastRawEstimate: null,
 		lastRequestModel: null,
-		lastSafeProjection: [],
 		metrics: null,
 		shutdownController: new AbortController(),
 	};

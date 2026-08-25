@@ -7,11 +7,11 @@ import { ContextManagementError } from "../src/errors.js";
 import { userMessage } from "./harness.js";
 
 describe("checkpoint generator", () => {
-	it("replays system, tools, and the eight-section instruction, then frames the checkpoint", async () => {
+	it("replays context with active thinking and frames the checkpoint", async () => {
 		const { pi, context, faux } = createGeneratorHost();
 		let sawInstruction = false;
 		faux.setResponses([
-			(request) => {
+			(request, options) => {
 				const last = request.messages.at(-1);
 				const lastText =
 					last?.role === "user"
@@ -21,8 +21,9 @@ describe("checkpoint generator", () => {
 						: undefined;
 				sawInstruction =
 					request.systemPrompt === "system prompt" &&
-					request.tools?.some((tool) => tool.name === "bash") === true &&
-					lastText === COMPACTION_INSTRUCTION;
+					request.tools?.length === 0 &&
+					lastText === COMPACTION_INSTRUCTION &&
+					options?.reasoning === "high";
 				return fauxAssistantMessage("## Next Step\n- continue");
 			},
 		]);
@@ -113,6 +114,7 @@ function createGeneratorHost(): {
 	} as unknown as ExtensionAPI;
 	const context = {
 		model,
+		thinkingLevel: "high",
 		getSystemPrompt: () => "system prompt",
 		sessionManager: { getSessionId: () => "session-1" },
 		modelRegistry: {

@@ -11,6 +11,7 @@ import type {
 import { vi } from "vitest";
 import { DEFAULT_CONFIG } from "../src/config.js";
 import { registerContextManagementExtension } from "../src/index.js";
+import type { RuntimeState } from "../src/runtime/state.js";
 
 type AgentMessage = ContextEvent["messages"][number];
 type Handler = (event: Record<string, unknown>, context: ExtensionContext) => unknown | Promise<unknown>;
@@ -87,6 +88,7 @@ export class ContextHarness {
 	readonly api: ExtensionAPI;
 	readonly context: ExtensionContext;
 	readonly faux;
+	readonly state: RuntimeState;
 	#handlers = new Map<string, Handler[]>();
 	#branch: SessionEntry[] = [];
 	#nextId = 1;
@@ -145,10 +147,14 @@ export class ContextHarness {
 				] as ToolInfo[],
 		} as unknown as ExtensionAPI;
 		this.queueSuccessfulSummary();
-		registerContextManagementExtension(this.api, Object.freeze({ ...DEFAULT_CONFIG, auto: options.auto ?? true }), {
-			agentDir,
-			withFileMutationQueue: async (_path, mutation) => mutation(),
-		});
+		this.state = registerContextManagementExtension(
+			this.api,
+			Object.freeze({ ...DEFAULT_CONFIG, auto: options.auto ?? true }),
+			{
+				agentDir,
+				withFileMutationQueue: async (_path, mutation) => mutation(),
+			},
+		);
 	}
 
 	queueSuccessfulSummary(): void {
@@ -161,6 +167,19 @@ export class ContextHarness {
 
 	addUser(text: string): string {
 		return this.#appendMessage(userMessage(text, this.#nextId));
+	}
+
+	addAssistant(text: string): string {
+		return this.#appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "faux",
+			provider: "faux",
+			model: "faux-1",
+			usage: EMPTY_USAGE,
+			stopReason: "stop",
+			timestamp: this.#nextId,
+		});
 	}
 
 	addToolResult(toolCallId: string, text: string): void {
@@ -177,6 +196,42 @@ export class ContextHarness {
 
 	async project(messages = this.messages()): Promise<{ messages: AgentMessage[] }> {
 		return (await this.emit("context", { type: "context", messages })) as { messages: AgentMessage[] };
+	}
+
+	async settle(): Promise<void> {
+		await this.emit("agent_settled", { type: "agent_settled" });
+	}
+
+	async tree(): Promise<void> {
+		await this.emit("session_tree", { type: "session_tree" });
+	}
+
+	async commitPending(): Promise<void> {
+		const candidate = this.state.pendingCheckpoint;
+		if (candidate === undefined) throw new Error("No pending checkpoint to commit.");
+		const entry: SessionEntry = {
+			type: "compaction",
+			id: `compaction-${this.#nextId++}`,
+			parentId: this.#branch.at(-1)?.id ?? null,
+			timestamp: new Date(this.#nextId * 1_000).toISOString(),
+			summary: candidate.summary,
+			firstKeptEntryId: candidate.firstKeptEntryId,
+			tokensBefore: candidate.tokensBefore,
+			details: candidate.details,
+			usage: candidate.usage,
+			fromHook: true,
+		};
+		const keptIndex = this.#branch.findIndex((item) => item.id === candidate.firstKeptEntryId);
+		if (keptIndex < 0) throw new Error("Pending checkpoint kept boundary is missing.");
+		const retained = this.#branch.slice(keptIndex);
+		this.#branch.splice(0, this.#branch.length, entry, ...retained);
+		await this.emit("session_compact", {
+			type: "session_compact",
+			reason: "manual",
+			willRetry: false,
+			compactionEntry: entry,
+			fromExtension: true,
+		});
 	}
 
 	async beforeCompact(

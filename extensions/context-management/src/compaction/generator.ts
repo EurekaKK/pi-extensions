@@ -5,11 +5,11 @@ import type {
 	Model,
 	Provider,
 	ProviderHeaders,
-	Tool,
+	ThinkingLevel,
 	Usage,
 } from "@earendil-works/pi-ai";
 import { retryAssistantCall } from "@earendil-works/pi-ai";
-import type { ContextEvent, ExtensionAPI, ExtensionContext, ToolInfo } from "@earendil-works/pi-coding-agent";
+import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import {
 	COMPACTION_INSTRUCTION,
@@ -28,19 +28,6 @@ export interface GeneratedCheckpoint {
 	readonly summary: string;
 	readonly usage: Usage;
 	readonly sourceEstimatedTokens: number;
-}
-
-function activeTools(pi: ExtensionAPI): ToolInfo[] {
-	const names = new Set(pi.getActiveTools());
-	return pi.getAllTools().filter((tool) => names.has(tool.name));
-}
-
-function toLlmTools(tools: readonly ToolInfo[]): Tool[] {
-	return tools.map((tool) => ({
-		name: tool.name,
-		description: tool.description,
-		parameters: tool.parameters,
-	}));
 }
 
 async function resolveProvider(
@@ -73,7 +60,6 @@ async function resolveProvider(
 
 function summarizerContext(input: {
 	readonly systemPrompt: string;
-	readonly tools: readonly ToolInfo[];
 	readonly messages: readonly AgentMessage[];
 }): Context {
 	return {
@@ -86,7 +72,7 @@ function summarizerContext(input: {
 				timestamp: Date.now(),
 			},
 		],
-		tools: toLlmTools(input.tools),
+		tools: [],
 	};
 }
 
@@ -103,10 +89,9 @@ async function requestCheckpoint(input: {
 	readonly env?: Record<string, string>;
 }): Promise<AssistantMessage> {
 	throwIfAborted(input.signal);
-	const tools = activeTools(input.pi);
 	const systemPrompt = input.extensionContext.getSystemPrompt();
 	const capacity =
-		estimateFixedEnvelope(systemPrompt, tools) +
+		estimateFixedEnvelope(systemPrompt, []) +
 		estimateProjection(input.messages) +
 		estimateInstructionTokens() +
 		8 +
@@ -119,16 +104,19 @@ async function requestCheckpoint(input: {
 	}
 	const requestContext = summarizerContext({
 		systemPrompt,
-		tools,
 		messages: input.messages,
 	});
 	const sessionId = input.extensionContext.sessionManager.getSessionId();
+	const selectedReasoning = input.extensionContext.thinkingLevel ?? input.pi.getThinkingLevel?.();
+	const reasoning: ThinkingLevel | undefined =
+		selectedReasoning === undefined || selectedReasoning === "off" ? undefined : selectedReasoning;
 	const response = await retryAssistantCall(
 		async () =>
 			await input.provider
 				.streamSimple(input.model, requestContext, {
 					maxTokens: input.maxTokens,
 					maxRetries: 0,
+					...(reasoning === undefined ? {} : { reasoning }),
 					timeoutMs: COMPACTOR_REQUEST_TIMEOUT_MS,
 					sessionId,
 					...(input.signal === undefined ? {} : { signal: input.signal }),

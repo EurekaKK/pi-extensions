@@ -34,7 +34,7 @@ function utf8HeadTail(text: string, headBytes: number, tailBytes: number): { tex
 	const head = buffer.subarray(0, Math.max(0, headBytes)).toString("utf8");
 	const tail = buffer.subarray(buffer.byteLength - Math.max(0, tailBytes)).toString("utf8");
 	const kept = Buffer.byteLength(head, "utf8") + Buffer.byteLength(tail, "utf8");
-	return { text: `${head}\n\n${tail}`, omitted: Math.max(0, buffer.byteLength - kept) };
+	return { text: `${head}${tail}`, omitted: Math.max(0, buffer.byteLength - kept) };
 }
 
 function spillNotice(omitted: number, locator: string): string {

@@ -6,6 +6,7 @@ import base64
 import re
 import shlex
 from pathlib import Path
+from secrets import token_hex
 from typing import override
 
 from harbor.agents.installed.base import (
@@ -27,13 +28,18 @@ from pi_eval_harness.constants import (
     PI_VERSION,
     PROVIDER_KEY_ENV,
     REMOTE_AGENT_DIR,
+    REMOTE_CONTEXT_TRACE,
+    REMOTE_EXTENSION_INSTALLER,
+    REMOTE_EXTENSION_REPO_ROOT,
     REMOTE_EXTENSION_ROOT,
+    REMOTE_EXTENSION_SOURCE_ROOT,
     REMOTE_MODEL_KEY_FILE,
     REMOTE_TAVILY_KEY_FILE,
     REMOTE_TUI_DRIVER,
     TAVILY_EXTENSION,
     THINKING_LEVELS,
 )
+from pi_eval_harness.context_trace import analyze_trace, read_trace
 from pi_eval_harness.usage import (
     float_value,
     int_value,
@@ -43,12 +49,13 @@ from pi_eval_harness.usage import (
 
 _EXTENSION_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _KEY_ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_EVAL_VARIANT = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class PiTuiAgent(BaseInstalledAgent):
     """Run pinned Pi through its real TUI with a configurable extension list."""
 
-    SUPPORTS_RESUME = False
+    SUPPORTS_RESUME = True
 
     CLI_FLAGS = [
         CliFlag(
@@ -82,6 +89,17 @@ class PiTuiAgent(BaseInstalledAgent):
         extra_env: dict[str, str] | None = None,
         extensions: list[str] | None = None,
         append_system_prompt: str | None = None,
+        context_trace: bool = False,
+        context_trace_strict: bool = False,
+        context_trace_expect_spill: bool = False,
+        context_trace_expect_prune: bool = False,
+        context_trace_expect_checkpoint: bool = False,
+        context_trace_expect_prepared_checkpoint: bool = False,
+        context_trace_expect_rolling_checkpoint: bool = False,
+        context_scenario_tools: bool = False,
+        context_background_followup: str | None = None,
+        context_background_followups: list[str] | None = None,
+        eval_variant: str | None = None,
         **kwargs: object,
     ) -> None:
         if extra_env:
@@ -114,11 +132,110 @@ class PiTuiAgent(BaseInstalledAgent):
         prompt = append_system_prompt or ""
         if "\x00" in prompt:
             raise ValueError("append_system_prompt must not contain NUL bytes")
+        if not isinstance(context_trace, bool):
+            raise ValueError("context_trace must be a boolean")
+        if not isinstance(context_trace_strict, bool):
+            raise ValueError("context_trace_strict must be a boolean")
+        if context_trace_strict and not context_trace:
+            raise ValueError("context_trace_strict requires context_trace")
+        if not isinstance(context_trace_expect_spill, bool):
+            raise ValueError("context_trace_expect_spill must be a boolean")
+        if context_trace_expect_spill and not context_trace:
+            raise ValueError("context_trace_expect_spill requires context_trace")
+        if not isinstance(context_trace_expect_prune, bool):
+            raise ValueError("context_trace_expect_prune must be a boolean")
+        if context_trace_expect_prune and not context_trace:
+            raise ValueError("context_trace_expect_prune requires context_trace")
+        if not isinstance(context_trace_expect_checkpoint, bool):
+            raise ValueError("context_trace_expect_checkpoint must be a boolean")
+        if context_trace_expect_checkpoint and not context_trace:
+            raise ValueError("context_trace_expect_checkpoint requires context_trace")
+        if not isinstance(context_trace_expect_prepared_checkpoint, bool):
+            raise ValueError(
+                "context_trace_expect_prepared_checkpoint must be a boolean"
+            )
+        if context_trace_expect_prepared_checkpoint and not context_trace:
+            raise ValueError(
+                "context_trace_expect_prepared_checkpoint requires context_trace"
+            )
+        if not isinstance(context_trace_expect_rolling_checkpoint, bool):
+            raise ValueError(
+                "context_trace_expect_rolling_checkpoint must be a boolean"
+            )
+        if context_trace_expect_rolling_checkpoint and not context_trace:
+            raise ValueError(
+                "context_trace_expect_rolling_checkpoint requires context_trace"
+            )
+        if not isinstance(context_scenario_tools, bool):
+            raise ValueError("context_scenario_tools must be a boolean")
+        if (
+            context_background_followup is not None
+            and context_background_followups is not None
+        ):
+            raise ValueError(
+                "context_background_followup and context_background_followups "
+                "are mutually exclusive"
+            )
+        if context_background_followups is not None and (
+            not isinstance(context_background_followups, list)
+            or not 1 <= len(context_background_followups) <= 3
+        ):
+            raise ValueError(
+                "context_background_followups must contain one to three prompts"
+            )
+        followups = (
+            list(context_background_followups)
+            if isinstance(context_background_followups, list)
+            else (
+                []
+                if context_background_followup is None
+                else [context_background_followup]
+            )
+        )
+        for followup in followups:
+            if (
+                not isinstance(followup, str)
+                or not followup.strip()
+                or "\x00" in followup
+            ):
+                raise ValueError(
+                    "context background follow-ups must be non-empty text without NUL"
+                )
+        if followups and (
+            not context_trace
+            or not context_scenario_tools
+            or "context-management" not in names
+        ):
+            raise ValueError(
+                "context_background_followup requires context trace, scenario "
+                "tools, and context-management"
+            )
+        if eval_variant is not None and (
+            not isinstance(eval_variant, str)
+            or not _EVAL_VARIANT.fullmatch(eval_variant)
+        ):
+            raise ValueError("eval_variant must be a kebab-case name")
 
         self._provider = provider
         self._model_id = model_id
         self._extensions = names
         self._append_system_prompt = prompt
+        self._context_trace = context_trace
+        self._context_trace_strict = context_trace_strict
+        self._context_trace_expect_spill = context_trace_expect_spill
+        self._context_trace_expect_prune = context_trace_expect_prune
+        self._context_trace_expect_checkpoint = context_trace_expect_checkpoint
+        self._context_trace_expect_prepared_checkpoint = (
+            context_trace_expect_prepared_checkpoint
+        )
+        self._context_trace_expect_rolling_checkpoint = (
+            context_trace_expect_rolling_checkpoint
+        )
+        self._context_scenario_tools = context_scenario_tools
+        self._context_background_followup = context_background_followup
+        self._context_background_followups = followups
+        self._eval_variant = eval_variant
+        self._context_trace_hmac_key = token_hex(32) if context_trace else None
         self._model_key_env = PROVIDER_KEY_ENV[provider]
         if not _KEY_ENV_NAME.fullmatch(self._model_key_env):
             raise ValueError(f"Invalid provider key env {self._model_key_env!r}")
@@ -137,6 +254,13 @@ class PiTuiAgent(BaseInstalledAgent):
         return "pi-tui"
 
     @override
+    def to_agent_info(self):
+        info = super().to_agent_info()
+        if self._eval_variant is None:
+            return info
+        return info.model_copy(update={"name": f"{info.name}-{self._eval_variant}"})
+
+    @override
     def get_version_command(self) -> str:
         return '. "$HOME/.nvm/nvm.sh"; pi --version'
 
@@ -144,7 +268,7 @@ class PiTuiAgent(BaseInstalledAgent):
     def parse_version(self, stdout: str) -> str:
         return stdout.strip().splitlines()[-1].strip()
 
-    def _runtime_env(self) -> dict[str, str]:
+    def _runtime_env(self, *, resume: bool = False) -> dict[str, str]:
         env = {
             "PI_EVAL_MODEL_KEY_FILE": REMOTE_MODEL_KEY_FILE,
             "PI_EVAL_PROVIDER": self._provider,
@@ -160,6 +284,29 @@ class PiTuiAgent(BaseInstalledAgent):
         }
         if TAVILY_EXTENSION in self._extensions:
             env["PI_EVAL_TAVILY_KEY_FILE"] = REMOTE_TAVILY_KEY_FILE
+        if self._context_trace:
+            env["PI_EVAL_CONTEXT_TRACE"] = REMOTE_CONTEXT_TRACE
+            assert self._context_trace_hmac_key is not None
+            env["PI_EVAL_CONTEXT_TRACE_KEY"] = self._context_trace_hmac_key
+        if self._context_scenario_tools:
+            env["PI_EVAL_CONTEXT_SCENARIO_TOOLS"] = "1"
+        if self._context_background_followup is not None:
+            env["PI_EVAL_BACKGROUND_FOLLOWUP_BASE64"] = base64.b64encode(
+                self._context_background_followup.encode()
+            ).decode("ascii")
+        elif self._context_background_followups:
+            env["PI_EVAL_BACKGROUND_FOLLOWUP_COUNT"] = str(
+                len(self._context_background_followups)
+            )
+            for index, followup in enumerate(
+                self._context_background_followups,
+                start=1,
+            ):
+                env[f"PI_EVAL_BACKGROUND_FOLLOWUP_{index}_BASE64"] = base64.b64encode(
+                    followup.encode()
+                ).decode("ascii")
+        if resume:
+            env["PI_EVAL_RESUME"] = "1"
         return env
 
     @override
@@ -169,7 +316,7 @@ class PiTuiAgent(BaseInstalledAgent):
             command=(
                 "apt-get update && "
                 "apt-get install -y --no-install-recommends "
-                "bash ca-certificates curl git ripgrep && "
+                "bash ca-certificates curl git ripgrep rsync && "
                 "rm -rf /var/lib/apt/lists/*"
             ),
             env={"DEBIAN_FRONTEND": "noninteractive"},
@@ -180,12 +327,23 @@ class PiTuiAgent(BaseInstalledAgent):
         if self._extensions:
             steps: list[str] = []
             for name in self._extensions:
-                package = f"{REMOTE_EXTENSION_ROOT}/{name}"
+                package = f"{REMOTE_EXTENSION_SOURCE_ROOT}/{name}"
                 steps.append(
                     f"test -f {shlex.quote(f'{package}/package.json')}; "
-                    f"test -f {shlex.quote(f'{package}/index.ts')}; "
-                    f"pi install {shlex.quote(package)} --approve"
+                    f"test -f {shlex.quote(f'{package}/index.ts')}"
                 )
+            requested = " ".join(shlex.quote(name) for name in self._extensions)
+            steps.extend(
+                [
+                    f"test -f {shlex.quote(REMOTE_EXTENSION_INSTALLER)}",
+                    (
+                        "PI_EXTENSIONS_REPO_ROOT="
+                        f"{shlex.quote(REMOTE_EXTENSION_REPO_ROOT)} "
+                        f"PI_AGENT_DIR={shlex.quote(REMOTE_AGENT_DIR)} "
+                        f"bash {shlex.quote(REMOTE_EXTENSION_INSTALLER)} {requested}"
+                    ),
+                ]
+            )
             install_extensions = "; ".join(steps) + "; "
 
         await self.exec_as_agent(
@@ -216,6 +374,26 @@ class PiTuiAgent(BaseInstalledAgent):
         instruction: str,
         environment: BaseEnvironment,
         context: AgentContext,
+    ) -> None:
+        await self._run_instruction(instruction, environment, context, resume=False)
+
+    @override
+    @with_prompt_template
+    async def resume(
+        self,
+        instruction: str,
+        environment: BaseEnvironment,
+        context: AgentContext,
+    ) -> None:
+        await self._run_instruction(instruction, environment, context, resume=True)
+
+    async def _run_instruction(
+        self,
+        instruction: str,
+        environment: BaseEnvironment,
+        context: AgentContext,
+        *,
+        resume: bool,
     ) -> None:
         submitted = instruction.strip()
         if not submitted:
@@ -250,7 +428,7 @@ class PiTuiAgent(BaseInstalledAgent):
                 f"bash {shlex.quote(REMOTE_TUI_DRIVER)} "
                 f"{shlex.quote(instruction_b64)} {shlex.quote(prompt_b64)}"
             ),
-            env=self._runtime_env(),
+            env=self._runtime_env(resume=resume),
         )
         raise_for_terminal_pi_error(result.stdout or "")
 
@@ -269,6 +447,24 @@ class PiTuiAgent(BaseInstalledAgent):
             "parent_mode": "tui",
             "instruction_delivery": "tui_bracketed_paste",
             "extension_bundle": list(self._extensions),
+            "context_trace_enabled": self._context_trace,
+            "context_trace_strict": self._context_trace_strict,
+            "context_trace_expect_spill": self._context_trace_expect_spill,
+            "context_trace_expect_prune": self._context_trace_expect_prune,
+            "context_trace_expect_checkpoint": self._context_trace_expect_checkpoint,
+            "context_trace_expect_prepared_checkpoint": (
+                self._context_trace_expect_prepared_checkpoint
+            ),
+            "context_trace_expect_rolling_checkpoint": (
+                self._context_trace_expect_rolling_checkpoint
+            ),
+            "context_scenario_tools": self._context_scenario_tools,
+            "context_background_followup": self._context_background_followup
+            is not None,
+            "context_background_followup_count": len(
+                self._context_background_followups
+            ),
+            "eval_variant": self._eval_variant,
             "isolation_flags": list(ISOLATION_FLAGS),
             "usage_accounting_scope": (
                 "main_pi_session_only" if has_subagent else "main_pi_session"
@@ -304,4 +500,23 @@ class PiTuiAgent(BaseInstalledAgent):
             metadata["assistant_model_turns"] = assistant_model_turns
             metadata["usage_source"] = usage_source
 
+        if self._context_trace:
+            trace_records = read_trace(self.logs_dir)
+            metadata["context_trace"] = analyze_trace(
+                trace_records,
+                expect_spill=self._context_trace_expect_spill,
+                expect_prune=self._context_trace_expect_prune,
+                expect_checkpoint=self._context_trace_expect_checkpoint,
+                expect_prepared_checkpoint=self._context_trace_expect_prepared_checkpoint,
+                expect_rolling_checkpoint=self._context_trace_expect_rolling_checkpoint,
+            )
+            metadata["context_trace_records"] = len(trace_records)
+
         context.metadata = metadata
+        if self._context_trace_strict:
+            analysis = metadata.get("context_trace")
+            invariants = (
+                analysis.get("invariants") if isinstance(analysis, dict) else None
+            )
+            if not isinstance(invariants, dict) or invariants.get("passed") is not True:
+                raise RuntimeError("Context trace invariants failed")

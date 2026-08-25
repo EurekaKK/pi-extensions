@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import yaml
 from harbor.models.job.config import JobConfig
+from harbor.models.task.task import Task
 
 from pi_eval_harness.constants import (
     AGENT_IMPORT,
-    REMOTE_EXTENSION_ROOT,
+    REMOTE_EXTENSION_REPO_ROOT,
+    REMOTE_EXTENSION_SOURCE_ROOT,
     REMOTE_MODEL_KEY_FILE,
+    REMOTE_PACKAGE_SOURCE_ROOT,
+    REMOTE_REPO_SCRIPTS_ROOT,
     REMOTE_RUNTIME_DIR,
     REMOTE_TAVILY_KEY_FILE,
     TAVILY_EXTENSION,
@@ -26,6 +31,11 @@ DATASET_DIGEST = (
     "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a"
 )
 SMOKE_TASK = "terminal-bench/cancel-async-tasks"
+EXTENSION_REPO_MOUNT_TARGETS = [
+    REMOTE_EXTENSION_SOURCE_ROOT,
+    REMOTE_PACKAGE_SOURCE_ROOT,
+    REMOTE_REPO_SCRIPTS_ROOT,
+]
 
 
 def load_config(name: str) -> JobConfig:
@@ -37,6 +47,12 @@ def mount_targets(config: JobConfig) -> list[str]:
     if config.environment.mounts is None:
         return []
     return [str(mount["target"]) for mount in config.environment.mounts]
+
+
+def assert_extension_repo_mounts(targets: list[str]) -> None:
+    assert REMOTE_EXTENSION_REPO_ROOT not in targets
+    for target in EXTENSION_REPO_MOUNT_TARGETS:
+        assert target in targets
 
 
 def assert_agent(
@@ -73,7 +89,7 @@ def test_runtime_smoke_mounts_model_key_and_runtime_only() -> None:
     assert config.agents[0].extra_allowed_hosts == ["opencode.ai"]
     assert mount_targets(config) == [REMOTE_MODEL_KEY_FILE, REMOTE_RUNTIME_DIR]
     assert REMOTE_TAVILY_KEY_FILE not in mount_targets(config)
-    assert REMOTE_EXTENSION_ROOT not in mount_targets(config)
+    assert not set(EXTENSION_REPO_MOUNT_TARGETS).intersection(mount_targets(config))
     for mount in config.environment.mounts or []:
         assert mount["read_only"] is True
 
@@ -83,7 +99,7 @@ def test_install_only_extensions_mounts_tree_without_keys() -> None:
 
     assert config.install_only is True
     assert_agent(config, SMOKE_EXTENSIONS)
-    assert mount_targets(config) == [REMOTE_EXTENSION_ROOT]
+    assert mount_targets(config) == EXTENSION_REPO_MOUNT_TARGETS
     assert REMOTE_MODEL_KEY_FILE not in mount_targets(config)
     assert REMOTE_TAVILY_KEY_FILE not in mount_targets(config)
 
@@ -95,7 +111,7 @@ def test_runtime_smoke_extensions_mounts_tree_without_tavily_key() -> None:
     targets = mount_targets(config)
     assert REMOTE_MODEL_KEY_FILE in targets
     assert REMOTE_RUNTIME_DIR in targets
-    assert REMOTE_EXTENSION_ROOT in targets
+    assert_extension_repo_mounts(targets)
     assert REMOTE_TAVILY_KEY_FILE not in targets
     for name in SMOKE_EXTENSIONS:
         assert (REPO_EXTENSIONS / name / "package.json").is_file()
@@ -110,7 +126,7 @@ def test_runtime_smoke_tavily_mounts_second_key() -> None:
     assert REMOTE_MODEL_KEY_FILE in targets
     assert REMOTE_TAVILY_KEY_FILE in targets
     assert REMOTE_RUNTIME_DIR in targets
-    assert REMOTE_EXTENSION_ROOT in targets
+    assert_extension_repo_mounts(targets)
     assert (REPO_EXTENSIONS / TAVILY_EXTENSION / "package.json").is_file()
     assert (REPO_EXTENSIONS / TAVILY_EXTENSION / "index.ts").is_file()
 
@@ -131,11 +147,242 @@ def test_runtime_smoke_four_ext_mounts_named_packages_without_tavily() -> None:
     targets = mount_targets(config)
     assert REMOTE_MODEL_KEY_FILE in targets
     assert REMOTE_RUNTIME_DIR in targets
-    assert REMOTE_EXTENSION_ROOT in targets
+    assert_extension_repo_mounts(targets)
     assert REMOTE_TAVILY_KEY_FILE not in targets
     for name in FOUR_EXTENSIONS:
         assert (REPO_EXTENSIONS / name / "package.json").is_file()
         assert (REPO_EXTENSIONS / name / "index.ts").is_file()
+
+
+def test_context_lab_is_a_fair_local_ab_matrix() -> None:
+    config = load_config("context-lab.yaml")
+
+    assert config.datasets == []
+    assert config.n_attempts == 1
+    assert config.n_concurrent_trials == 1
+    assert len(config.agents) == 2
+    native, managed = config.agents
+    assert native.model_name == managed.model_name == "opencode-go/ox-alpha-free"
+    assert native.resume_trajectory is True
+    assert managed.resume_trajectory is True
+    assert native.kwargs["thinking"] == managed.kwargs["thinking"] == "high"
+    assert native.kwargs["context_trace"] is True
+    assert managed.kwargs["context_trace"] is True
+    assert native.kwargs["context_trace_strict"] is True
+    assert managed.kwargs["context_trace_strict"] is True
+    assert native.kwargs.get("context_trace_expect_spill") is not True
+    assert managed.kwargs["context_trace_expect_spill"] is True
+    assert native.kwargs["context_scenario_tools"] is True
+    assert managed.kwargs["context_scenario_tools"] is True
+    assert native.kwargs["eval_variant"] == "native"
+    assert managed.kwargs["eval_variant"] == "context-management"
+    assert native.kwargs["extensions"] == []
+    assert managed.kwargs["extensions"] == ["context-management"]
+    assert_extension_repo_mounts(mount_targets(config))
+    assert len(config.tasks) == 3
+    for task in config.tasks:
+        assert task.path is not None
+        task_path = ROOT / task.path
+        assert Task.is_valid_dir(task_path)
+
+
+def test_context_large_output_smoke_is_the_narrow_two_arm_probe() -> None:
+    config = load_config("context-large-output-smoke.yaml")
+
+    assert config.datasets == []
+    assert config.n_attempts == 1
+    assert config.n_concurrent_trials == 1
+    assert len(config.agents) == 2
+    native, managed = config.agents
+    assert native.model_name == managed.model_name == "opencode-go/ox-alpha-free"
+    assert native.kwargs["eval_variant"] == "native"
+    assert managed.kwargs["eval_variant"] == "context-management"
+    assert native.kwargs["extensions"] == []
+    assert managed.kwargs["extensions"] == ["context-management"]
+    assert native.kwargs["context_trace_strict"] is True
+    assert managed.kwargs["context_trace_strict"] is True
+    assert native.kwargs.get("context_trace_expect_spill") is not True
+    assert managed.kwargs["context_trace_expect_spill"] is True
+    assert_extension_repo_mounts(mount_targets(config))
+    assert len(config.tasks) == 1
+    task = config.tasks[0]
+    assert task.path == Path("tasks/context-lab/large-tool-output")
+    assert Task.is_valid_dir(ROOT / task.path)
+    instruction = (ROOT / task.path / "instruction.md").read_text()
+    assert "CTX_CANARY_EXPECT_SPILL_BYTES_70000" in instruction
+
+
+def test_context_large_output_250k_smoke_is_the_effectiveness_ab() -> None:
+    config = load_config("context-large-output-250k-smoke.yaml")
+
+    assert config.datasets == []
+    assert config.n_attempts == 1
+    assert config.n_concurrent_trials == 1
+    assert len(config.agents) == 2
+    native, managed = config.agents
+    assert native.model_name == managed.model_name == "opencode-go/ox-alpha-free"
+    assert native.kwargs["eval_variant"] == "native"
+    assert managed.kwargs["eval_variant"] == "context-management"
+    assert native.kwargs["extensions"] == []
+    assert managed.kwargs["extensions"] == ["context-management"]
+    assert native.kwargs.get("context_trace_expect_spill") is not True
+    assert managed.kwargs["context_trace_expect_spill"] is True
+    assert native.kwargs["context_trace_strict"] is True
+    assert managed.kwargs["context_trace_strict"] is True
+    assert_extension_repo_mounts(mount_targets(config))
+    assert len(config.tasks) == 1
+    task = config.tasks[0]
+    assert task.path == Path("tasks/context-lab/large-tool-output-250k")
+    assert Task.is_valid_dir(ROOT / task.path)
+    instruction = (ROOT / task.path / "instruction.md").read_text()
+    assert "CTX_CANARY_EXPECT_SPILL_BYTES_250000" in instruction
+    assert "`bytes`: `250000`" in instruction
+    verifier = (ROOT / task.path / "tests" / "test.sh").read_text()
+    assert '"bytes":250000' in verifier
+
+
+def test_context_prune_pressure_smoke_is_managed_only() -> None:
+    config = load_config("context-prune-pressure-smoke.yaml")
+
+    assert config.datasets == []
+    assert config.n_attempts == 1
+    assert config.n_concurrent_trials == 1
+    assert len(config.agents) == 1
+    agent = config.agents[0]
+    assert agent.model_name == "opencode-go/ox-alpha-free"
+    assert agent.kwargs["eval_variant"] == "context-management"
+    assert agent.kwargs["extensions"] == ["context-management"]
+    assert agent.kwargs["context_trace_strict"] is True
+    assert agent.kwargs["context_trace_expect_prune"] is True
+    assert agent.kwargs.get("context_trace_expect_spill") is not True
+    assert_extension_repo_mounts(mount_targets(config))
+    assert len(config.tasks) == 1
+    task = config.tasks[0]
+    assert task.path == Path("tasks/context-lab/repeated-spill-prune")
+    assert Task.is_valid_dir(ROOT / task.path)
+    instruction = (ROOT / task.path / "instruction.md").read_text()
+    assert "CTX_CANARY_EXPECT_PRUNE_SPILLS_17_BYTES_250000" in instruction
+    labels = re.findall(r"`CTX_CANARY_PRESSURE_\d{2}`", instruction)
+    assert len(labels) == 17
+    assert len(set(labels)) == 17
+    verifier = (ROOT / task.path / "tests" / "test.sh").read_text()
+    assert "for index in {01..17}" in verifier
+    assert '"bytes":250000' in verifier
+
+
+def test_context_checkpoint_smoke_is_two_step_managed_continuity() -> None:
+    config = load_config("context-checkpoint-smoke.yaml")
+
+    assert config.datasets == []
+    assert config.n_attempts == 1
+    assert config.n_concurrent_trials == 1
+    assert len(config.agents) == 1
+    agent = config.agents[0]
+    assert agent.model_name == "opencode-go/ox-alpha-free"
+    assert agent.resume_trajectory is True
+    assert agent.kwargs["eval_variant"] == "context-management"
+    assert agent.kwargs["extensions"] == ["context-management"]
+    assert agent.kwargs["context_trace_strict"] is True
+    assert agent.kwargs["context_trace_expect_checkpoint"] is True
+    assert_extension_repo_mounts(mount_targets(config))
+    assert len(config.tasks) == 1
+    task = config.tasks[0]
+    assert task.path == Path("tasks/context-lab/checkpoint-continuity")
+    assert Task.is_valid_dir(ROOT / task.path)
+
+    seed = (ROOT / task.path / "steps" / "seed" / "instruction.md").read_text()
+    recall = (ROOT / task.path / "steps" / "recall" / "instruction.md").read_text()
+    verifier = (ROOT / task.path / "steps" / "recall" / "tests" / "test.sh").read_text()
+    assert "CTX_CANARY_REQUIRE_TOOL_CONTEXT_SEED_HISTORY" in seed
+    assert "CTX_CANARY_REQUIRE_TOOL_WRITE" not in seed
+    assert "CTX_CANARY_EXPECT_CHECKPOINT_CHUNKS_9_BYTES_100000" in recall
+    for canary in (
+        "CTX_CANARY_CHECKPOINT_PERSIST_ALPHA_7Q2M",
+        "CTX_CANARY_CHECKPOINT_TAIL_OMEGA_9K4R",
+    ):
+        assert canary not in recall
+        assert canary in verifier
+
+
+def test_context_prepared_checkpoint_smoke_is_same_process_followup() -> None:
+    config = load_config("context-prepared-checkpoint-smoke.yaml")
+
+    assert config.datasets == []
+    assert config.n_attempts == 1
+    assert config.n_concurrent_trials == 1
+    assert len(config.agents) == 1
+    agent = config.agents[0]
+    assert agent.model_name == "opencode-go/ox-alpha-free"
+    assert agent.resume_trajectory is False
+    assert agent.kwargs["extensions"] == ["context-management"]
+    assert agent.kwargs["context_trace_strict"] is True
+    assert agent.kwargs["context_trace_expect_checkpoint"] is True
+    assert agent.kwargs["context_trace_expect_prepared_checkpoint"] is True
+    followup = agent.kwargs["context_background_followup"]
+    assert isinstance(followup, str)
+    assert "CTX_CANARY_EXPECT_CHECKPOINT_CHUNKS_9_BYTES_100000" in followup
+    assert "CTX_CANARY_EXPECT_PREPARED_CHECKPOINT_BASELINE_MS_36962" in followup
+    assert "CTX_CANARY_REQUIRE_TOOL_WRITE" in followup
+    assert_extension_repo_mounts(mount_targets(config))
+    assert len(config.tasks) == 1
+    task = config.tasks[0]
+    assert task.path == Path("tasks/context-lab/prepared-checkpoint-continuity")
+    assert Task.is_valid_dir(ROOT / task.path)
+    instruction = (ROOT / task.path / "instruction.md").read_text()
+    assert "CTX_CANARY_REQUIRE_TOOL_CONTEXT_SEED_HISTORY" in instruction
+    verifier = (ROOT / task.path / "tests" / "test.sh").read_text()
+    for canary in (
+        "CTX_CANARY_CHECKPOINT_PERSIST_ALPHA_7Q2M",
+        "CTX_CANARY_CHECKPOINT_TAIL_OMEGA_9K4R",
+    ):
+        assert canary not in instruction
+        assert canary not in followup
+        assert canary in verifier
+
+
+def test_context_rolling_checkpoint_smoke_has_two_ready_gated_cycles() -> None:
+    config = load_config("context-rolling-checkpoint-smoke.yaml")
+
+    assert config.datasets == []
+    assert config.n_attempts == 1
+    assert config.n_concurrent_trials == 1
+    assert len(config.agents) == 1
+    agent = config.agents[0]
+    assert agent.model_name == "opencode-go/ox-alpha-free"
+    assert agent.resume_trajectory is False
+    assert agent.kwargs["extensions"] == ["context-management"]
+    assert agent.kwargs["context_trace_strict"] is True
+    assert agent.kwargs["context_trace_expect_rolling_checkpoint"] is True
+    followups = agent.kwargs["context_background_followups"]
+    assert isinstance(followups, list)
+    assert len(followups) == 2
+    assert (
+        "CTX_CANARY_EXPECT_ROLLING_CHECKPOINT_CYCLE_1_OF_2_BASELINE_MS_36962"
+        in followups[0]
+    )
+    assert (
+        "CTX_CANARY_EXPECT_ROLLING_CHECKPOINT_CYCLE_2_OF_2_BASELINE_MS_36962"
+        in followups[1]
+    )
+    assert "CTX_CANARY_REQUIRE_TOOL_CONTEXT_SEED_HISTORY" in followups[0]
+    assert "CTX_CANARY_REQUIRE_TOOL_WRITE" in followups[0]
+    assert "CTX_CANARY_REQUIRE_TOOL_WRITE" in followups[1]
+    assert_extension_repo_mounts(mount_targets(config))
+    assert len(config.tasks) == 1
+    task = config.tasks[0]
+    assert task.path == Path("tasks/context-lab/rolling-checkpoint-continuity")
+    assert Task.is_valid_dir(ROOT / task.path)
+    instruction = (ROOT / task.path / "instruction.md").read_text()
+    verifier = (ROOT / task.path / "tests" / "test.sh").read_text()
+    for canary in (
+        "CTX_CANARY_CHECKPOINT_PERSIST_ALPHA_7Q2M",
+        "CTX_CANARY_CHECKPOINT_TAIL_OMEGA_9K4R",
+        "CTX_CANARY_CHECKPOINT_PERSIST_BETA_4N8V",
+        "CTX_CANARY_CHECKPOINT_TAIL_SIGMA_6P3D",
+    ):
+        assert canary not in instruction
+        assert all(canary not in followup for followup in followups)
+        assert canary in verifier
 
 
 VISION_TASKS = {
@@ -255,7 +502,7 @@ def test_dev12_is_four_easy_four_medium_four_hard() -> None:
     assert REMOTE_MODEL_KEY_FILE in four_targets
     assert REMOTE_TAVILY_KEY_FILE not in four_targets
     assert REMOTE_RUNTIME_DIR in four_targets
-    assert REMOTE_EXTENSION_ROOT in four_targets
+    assert_extension_repo_mounts(four_targets)
 
 
 def test_med16_is_sixteen_medium_tasks_under_timeout() -> None:
@@ -299,7 +546,7 @@ def test_med16_is_sixteen_medium_tasks_under_timeout() -> None:
     assert REMOTE_MODEL_KEY_FILE in four_targets
     assert REMOTE_TAVILY_KEY_FILE not in four_targets
     assert REMOTE_RUNTIME_DIR in four_targets
-    assert REMOTE_EXTENSION_ROOT in four_targets
+    assert_extension_repo_mounts(four_targets)
 
 
 def test_dev16_is_sixteen_nonvisual_tasks() -> None:
@@ -346,7 +593,7 @@ def test_dev16_is_sixteen_nonvisual_tasks() -> None:
     assert REMOTE_MODEL_KEY_FILE in four_targets
     assert REMOTE_TAVILY_KEY_FILE not in four_targets
     assert REMOTE_RUNTIME_DIR in four_targets
-    assert REMOTE_EXTENSION_ROOT in four_targets
+    assert_extension_repo_mounts(four_targets)
     probe = load_config("dev16-four-ext-probe2.yaml")
     probe_tasks = probe.datasets[0].task_names or []
     assert probe_tasks == [

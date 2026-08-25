@@ -6,7 +6,12 @@ readonly sessions_dir="/logs/agent/pi/sessions"
 readonly transcript_log="/logs/agent/pi-tui.typescript"
 readonly stream_log="/logs/agent/pi-tui-stream.log"
 readonly goal_settlement_js="${runtime_dir}/goal-settlement.mjs"
+readonly candidate_state_js="${runtime_dir}/candidate-state.mjs"
+readonly context_probe_js="${runtime_dir}/context-probe/index.mjs"
+readonly context_scenario_tools_js="${runtime_dir}/context-scenario-tools/index.mjs"
 readonly goal_round_grace_sec=15
+readonly max_stream_recoveries=3
+readonly candidate_ready_timeout_sec=330
 
 : "${PI_EVAL_PROVIDER:?PI_EVAL_PROVIDER is required}"
 : "${PI_EVAL_MODEL:?PI_EVAL_MODEL is required}"
@@ -31,13 +36,22 @@ launch_pi() {
     --no-prompt-templates
     --no-themes
   )
-  local extension_path
+	if [[ -n "${PI_EVAL_RESUME_SESSION:-}" ]]; then
+		args+=(--session "${PI_EVAL_RESUME_SESSION}")
+	fi
+	if [[ -n "${PI_EVAL_CONTEXT_SCENARIO_TOOLS:-}" ]]; then
+		args+=(--extension "${context_scenario_tools_js}")
+	fi
+	local extension_path
   if [[ -n "${PI_EVAL_EXTENSIONS:-}" ]]; then
     while IFS= read -r extension_path; do
       if [[ -n "${extension_path}" ]]; then
         args+=(--extension "${extension_path}")
       fi
     done <<< "${PI_EVAL_EXTENSIONS}"
+  fi
+  if [[ -n "${PI_EVAL_CONTEXT_TRACE:-}" ]]; then
+    args+=(--extension "${context_probe_js}")
   fi
   if [[ -n "${PI_EVAL_APPEND_SYSTEM_PROMPT:-}" ]]; then
     args+=(--append-system-prompt "${PI_EVAL_APPEND_SYSTEM_PROMPT}")
@@ -56,6 +70,34 @@ fi
 
 instruction_text="$(printf '%s' "$1" | base64 --decode)"
 readonly instruction_text
+background_followup_texts=()
+if [[ -n "${PI_EVAL_BACKGROUND_FOLLOWUP_BASE64:-}" ]]; then
+	background_followup_texts+=("$(printf '%s' "${PI_EVAL_BACKGROUND_FOLLOWUP_BASE64}" | base64 --decode)")
+	if [[ -z "${background_followup_texts[0]}" ]]; then
+		echo "PI_EVAL_BACKGROUND_FOLLOWUP_BASE64 decoded to empty text" >&2
+		exit 65
+	fi
+elif [[ -n "${PI_EVAL_BACKGROUND_FOLLOWUP_COUNT:-}" ]]; then
+	if [[ ! "${PI_EVAL_BACKGROUND_FOLLOWUP_COUNT}" =~ ^[1-3]$ ]]; then
+		echo "PI_EVAL_BACKGROUND_FOLLOWUP_COUNT must be between 1 and 3" >&2
+		exit 65
+	fi
+	for ((followup_number = 1; followup_number <= PI_EVAL_BACKGROUND_FOLLOWUP_COUNT; followup_number += 1)); do
+		followup_var="PI_EVAL_BACKGROUND_FOLLOWUP_${followup_number}_BASE64"
+		followup_encoded="${!followup_var:-}"
+		if [[ -z "${followup_encoded}" ]]; then
+			echo "${followup_var} is required" >&2
+			exit 65
+		fi
+		followup_decoded="$(printf '%s' "${followup_encoded}" | base64 --decode)"
+		if [[ -z "${followup_decoded}" ]]; then
+			echo "${followup_var} decoded to empty text" >&2
+			exit 65
+		fi
+		background_followup_texts+=("${followup_decoded}")
+	done
+fi
+readonly -a background_followup_texts
 if [[ -n "${2:-}" ]]; then
   export PI_EVAL_APPEND_SYSTEM_PROMPT="$(printf '%s' "$2" | base64 --decode)"
 fi
@@ -66,6 +108,16 @@ if [[ -z "${instruction_text}" ]]; then
 fi
 
 mkdir -p "${sessions_dir}"
+if [[ -n "${PI_EVAL_RESUME:-}" ]]; then
+  mapfile -d '' resume_sessions < <(
+    find "${sessions_dir}" -maxdepth 1 -type f -name '*.jsonl' -print0
+  )
+  if ((${#resume_sessions[@]} != 1)); then
+    echo "Resume requires exactly one existing Pi session; found ${#resume_sessions[@]}" >&2
+    exit 79
+  fi
+  export PI_EVAL_RESUME_SESSION="${resume_sessions[0]}"
+fi
 : >"${transcript_log}"
 : >"${stream_log}"
 
@@ -81,6 +133,22 @@ exec 3<>"${input_fifo}"
 session_has() {
   local pattern="$1"
   rg --text --quiet --glob '*.jsonl' "${pattern}" "${sessions_dir}" 2>/dev/null
+}
+
+wait_for_extension_name() {
+  local extension_name="$1"
+  local deadline=$((SECONDS + 30))
+  until rg --text --quiet --fixed-strings "${extension_name}" "${transcript_log}" 2>/dev/null; do
+    if ! kill -0 "${script_pid}" 2>/dev/null; then
+      echo "Pi exited before extension ${extension_name} appeared" >&2
+      return 71
+    fi
+    if ((SECONDS >= deadline)); then
+      echo "Timed out waiting for extension ${extension_name}" >&2
+      return 70
+    fi
+    sleep 0.25
+  done
 }
 
 wait_for_prompt() {
@@ -102,19 +170,14 @@ wait_for_prompt() {
     while IFS= read -r extension_path; do
       [[ -z "${extension_path}" ]] && continue
       extension_name="$(basename "$(dirname "${extension_path}")")"
-      deadline=$((SECONDS + 30))
-      until rg --text --quiet --fixed-strings "${extension_name}" "${transcript_log}" 2>/dev/null; do
-        if ! kill -0 "${script_pid}" 2>/dev/null; then
-          echo "Pi exited before extension ${extension_name} appeared" >&2
-          return 71
-        fi
-        if ((SECONDS >= deadline)); then
-          echo "Timed out waiting for extension ${extension_name}" >&2
-          return 70
-        fi
-        sleep 0.25
-      done
+      wait_for_extension_name "${extension_name}" || return $?
     done <<< "${PI_EVAL_EXTENSIONS}"
+  fi
+  if [[ -n "${PI_EVAL_CONTEXT_SCENARIO_TOOLS:-}" ]]; then
+    wait_for_extension_name "context-scenario-tools" || return $?
+  fi
+  if [[ -n "${PI_EVAL_CONTEXT_TRACE:-}" ]]; then
+    wait_for_extension_name "context-probe" || return $?
   fi
 }
 
@@ -124,11 +187,36 @@ working_count() {
   printf '%s' "${count:-0}"
 }
 
+compacting_count() {
+  local count
+  count="$(rg --text --count --fixed-strings "Compacting conversation…" "${transcript_log}" 2>/dev/null || true)"
+  printf '%s' "${count:-0}"
+}
+
+submission_activity_count() {
+  local working
+  local compacting
+  working="$(working_count)"
+  compacting="$(compacting_count)"
+  printf '%s' "$((working + compacting))"
+}
+
 error_event_count() {
   local count
   count="$(
     rg --text --glob '*.jsonl' --count-matches \
       '"role":"assistant".*"stopReason":"(error|aborted)"' \
+      "${sessions_dir}" 2>/dev/null \
+      | awk -F: '{ total += $NF } END { print total + 0 }'
+  )"
+  printf '%s' "${count:-0}"
+}
+
+assistant_stop_count() {
+  local count
+  count="$(
+    rg --text --glob '*.jsonl' --count-matches \
+      '"role":"assistant".*"stopReason":"stop"' \
       "${sessions_dir}" 2>/dev/null \
       | awk -F: '{ total += $NF } END { print total + 0 }'
   )"
@@ -158,13 +246,31 @@ wait_for_working_after() {
 }
 
 wait_for_submission() {
-  wait_for_working_after 0 || {
+  wait_for_submission_activity_after 0 || {
     local status=$?
     if ((status == 73)); then
       echo "Timed out waiting for Pi to acknowledge the benchmark instruction" >&2
     fi
     return "${status}"
   }
+}
+
+wait_for_submission_activity_after() {
+  local previous="$1"
+  local deadline=$((SECONDS + 30))
+  local current
+  current="$(submission_activity_count)"
+  until ((current > previous)); do
+    if ! kill -0 "${script_pid}" 2>/dev/null; then
+      echo "Pi exited before acknowledging the benchmark instruction" >&2
+      return 72
+    fi
+    if ((SECONDS >= deadline)); then
+      return 73
+    fi
+    sleep 0.1
+    current="$(submission_activity_count)"
+  done
 }
 
 last_error_line() {
@@ -188,7 +294,42 @@ continue_after_stream_error() {
 }
 
 goal_settlement() {
-  node "${goal_settlement_js}" "${sessions_dir}"
+  local minimum_stop_count="$1"
+  node "${goal_settlement_js}" "${sessions_dir}" "${minimum_stop_count}"
+}
+
+candidate_lifecycle_state() {
+	if [[ -z "${PI_EVAL_CONTEXT_TRACE:-}" ]]; then
+		printf 'none'
+		return 0
+	fi
+	node "${candidate_state_js}" "${PI_EVAL_CONTEXT_TRACE}"
+}
+
+wait_for_candidate_ready() {
+	local deadline=$((SECONDS + candidate_ready_timeout_sec))
+	local state
+	while true; do
+		state="$(candidate_lifecycle_state)"
+		case "${state}" in
+			ready)
+				return 0
+				;;
+			failed|discarded)
+				echo "Background checkpoint candidate ended in state ${state}" >&2
+				return 77
+				;;
+		esac
+		if ! kill -0 "${script_pid}" 2>/dev/null; then
+			echo "Pi exited before the background checkpoint candidate became ready" >&2
+			return 76
+		fi
+		if ((SECONDS >= deadline)); then
+			echo "Timed out waiting for the background checkpoint candidate" >&2
+			return 70
+		fi
+		sleep 0.5
+	done
 }
 
 drive_instruction() {
@@ -198,13 +339,24 @@ drive_instruction() {
   local continue_status
   local settlement
   local armed_since=""
+	local previous_stop_count
+	local current_stop_count
+	local previous_activity_count
+	local followup_status
+	local followup_index=0
+	local followup_count=${#background_followup_texts[@]}
   wait_for_prompt || return $?
+  previous_stop_count="$(assistant_stop_count)"
   paste_user_text "${instruction_text}"
   wait_for_submission || return $?
 
   while true; do
     errors="$(error_event_count)"
     if ((errors > handled_errors)); then
+      if ((errors > max_stream_recoveries)); then
+        echo "Exceeded recoverable model stream error limit (${max_stream_recoveries})" >&2
+        return 75
+      fi
       error_line="$(last_error_line)"
       if is_hard_api_error "${error_line}"; then
         echo "Pi ended the instruction with an error" >&2
@@ -223,16 +375,40 @@ drive_instruction() {
       fi
       continue
     fi
-    settlement="$(goal_settlement)"
-    case "${settlement}" in
+    current_stop_count="$(assistant_stop_count)"
+    if ((current_stop_count <= previous_stop_count)); then
+      if ! kill -0 "${script_pid}" 2>/dev/null; then
+        echo "Pi exited before producing a settled response for this instruction" >&2
+        return 76
+      fi
+      sleep 0.5
+      continue
+    fi
+    settlement="$(goal_settlement "${previous_stop_count}")"
+		case "${settlement}" in
       running)
         armed_since=""
         ;;
       driven)
         armed_since=""
         ;;
-      quit)
-        return 0
+			quit)
+				if ((followup_index < followup_count)); then
+					wait_for_candidate_ready || return $?
+					previous_stop_count="${current_stop_count}"
+					previous_activity_count="$(submission_activity_count)"
+					paste_user_text "${background_followup_texts[followup_index]}"
+					followup_index=$((followup_index + 1))
+					followup_status=0
+					wait_for_submission_activity_after "${previous_activity_count}" || followup_status=$?
+					if ((followup_status != 0)); then
+						echo "Background checkpoint follow-up was not acknowledged" >&2
+						return "${followup_status}"
+					fi
+					armed_since=""
+					continue
+				fi
+				return 0
         ;;
       armed)
         if [[ -z "${armed_since}" ]]; then

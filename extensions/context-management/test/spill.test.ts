@@ -66,6 +66,30 @@ describe("tool-result spill", () => {
 		expect(Buffer.byteLength(replaced, "utf8")).toBeLessThanOrEqual(DEFAULT_CONFIG.spill.maxInlineBytes);
 	});
 
+	it("bounds a 70,000-byte result when omission counts keep the same digit width", async () => {
+		const text = "z".repeat(70_000);
+		const result = await maybeSpillToolResult({
+			event: {
+				type: "tool_result",
+				toolCallId: "c-large",
+				toolName: "context_burst",
+				input: {},
+				content: [{ type: "text", text }],
+				isError: false,
+				details: undefined,
+			},
+			sessionId: "session-large",
+			agentDir,
+			maxInlineBytes: DEFAULT_CONFIG.spill.maxInlineBytes,
+			withFileMutationQueue,
+		});
+
+		expect(result?.content[0]?.type).toBe("text");
+		const replaced = result?.content[0]?.type === "text" ? result.content[0].text : "";
+		expect(replaced).not.toBe(text);
+		expect(Buffer.byteLength(replaced, "utf8")).toBeLessThanOrEqual(DEFAULT_CONFIG.spill.maxInlineBytes);
+	});
+
 	it("leaves mixed image results inline", async () => {
 		const result = await maybeSpillToolResult({
 			event: {

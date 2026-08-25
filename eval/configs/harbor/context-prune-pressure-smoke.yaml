@@ -1,0 +1,53 @@
+job_name: context-prune-pressure-smoke-pi-tui
+jobs_dir: runs/context-prune-pressure-smoke
+n_attempts: 1
+n_concurrent_trials: 1
+agents:
+  - import_path: pi_eval_harness.agent:PiTuiAgent
+    model_name: opencode-go/ox-alpha-free
+    extra_allowed_hosts:
+      - opencode.ai
+    resume_trajectory: true
+    kwargs:
+      thinking: high
+      context_trace: true
+      context_trace_strict: true
+      context_trace_expect_prune: true
+      context_scenario_tools: true
+      eval_variant: context-management
+      extensions:
+        - context-management
+environment:
+  mounts:
+    - type: bind
+      source: "${PI_EVAL_MODEL_KEY_FILE}"
+      target: /run/secrets/pi-eval-model-api-key
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: "${PI_EVAL_RUNTIME_DIR}"
+      target: /opt/pi-eval/runtime
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: "${PI_EVAL_EXTENSIONS_DIR}"
+      target: /opt/pi-extension-repo/extensions
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: "${PI_EVAL_PACKAGES_DIR}"
+      target: /opt/pi-extension-repo/packages
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: "${PI_EVAL_REPO_SCRIPTS_DIR}"
+      target: /opt/pi-extension-repo/scripts
+      read_only: true
+      bind:
+        create_host_path: false
+tasks:
+  - path: tasks/context-lab/repeated-spill-prune

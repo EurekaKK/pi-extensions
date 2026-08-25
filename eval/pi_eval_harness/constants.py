@@ -18,11 +18,19 @@ THINKING_LEVELS = (
 )
 
 REMOTE_RUNTIME_DIR = "/opt/pi-eval/runtime"
-REMOTE_EXTENSION_ROOT = "/opt/pi-extensions"
+REMOTE_AGENT_DIR = "/tmp/harbor-pi-tui"
+REMOTE_EXTENSION_REPO_ROOT = "/opt/pi-extension-repo"
+REMOTE_EXTENSION_SOURCE_ROOT = f"{REMOTE_EXTENSION_REPO_ROOT}/extensions"
+REMOTE_PACKAGE_SOURCE_ROOT = f"{REMOTE_EXTENSION_REPO_ROOT}/packages"
+REMOTE_REPO_SCRIPTS_ROOT = f"{REMOTE_EXTENSION_REPO_ROOT}/scripts"
+REMOTE_EXTENSION_INSTALLER = f"{REMOTE_REPO_SCRIPTS_ROOT}/install-extension.sh"
+REMOTE_EXTENSION_ROOT = f"{REMOTE_AGENT_DIR}/my-extensions"
 REMOTE_MODEL_KEY_FILE = "/run/secrets/pi-eval-model-api-key"
 REMOTE_TAVILY_KEY_FILE = "/run/secrets/pi-eval-tavily-api-key"
 REMOTE_TUI_DRIVER = f"{REMOTE_RUNTIME_DIR}/run-pi-tui.sh"
-REMOTE_AGENT_DIR = "/tmp/harbor-pi-tui"
+REMOTE_CONTEXT_PROBE = f"{REMOTE_RUNTIME_DIR}/context-probe/index.mjs"
+REMOTE_CONTEXT_SCENARIO_TOOLS = f"{REMOTE_RUNTIME_DIR}/context-scenario-tools/index.mjs"
+REMOTE_CONTEXT_TRACE = "/logs/agent/pi/context-probe/probe.ndjson"
 
 ISOLATION_FLAGS = (
     "--no-extensions",

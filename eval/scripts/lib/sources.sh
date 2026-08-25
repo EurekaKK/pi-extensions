@@ -51,16 +51,31 @@ export_runtime_dir() {
   export PI_EVAL_RUNTIME_DIR="${runtime_dir}"
 }
 
-export_extensions_dir() {
+export_extension_repo_sources() {
   local repo_root="$1"
   local extensions_dir="${repo_root}/extensions"
+  local packages_dir="${repo_root}/packages"
+  local repo_scripts_dir="${repo_root}/scripts"
 
   require_regular_path "${extensions_dir}" "extensions tree" || return $?
+  require_regular_path "${packages_dir}" "packages tree" || return $?
+  require_regular_path "${repo_scripts_dir}" "repository scripts tree" || return $?
   if [[ ! -d "${extensions_dir}" ]]; then
     echo "extensions/ tree is missing: ${extensions_dir}" >&2
     return 3
   fi
+  if [[ ! -d "${packages_dir}" ]]; then
+    echo "packages/ tree is missing: ${packages_dir}" >&2
+    return 3
+  fi
+  if [[ ! -f "${repo_scripts_dir}/install-extension.sh" \
+    || ! -f "${repo_scripts_dir}/install-plan.mjs" ]]; then
+    echo "Repository extension installer is incomplete: ${repo_scripts_dir}" >&2
+    return 3
+  fi
   export PI_EVAL_EXTENSIONS_DIR="${extensions_dir}"
+  export PI_EVAL_PACKAGES_DIR="${packages_dir}"
+  export PI_EVAL_REPO_SCRIPTS_DIR="${repo_scripts_dir}"
 }
 
 job_extension_names() {
@@ -72,17 +87,24 @@ from pathlib import Path
 
 payload = yaml.safe_load(Path(sys.argv[1]).read_text())
 agents = payload.get("agents") or []
-if len(agents) != 1:
-    raise SystemExit("jobs must declare exactly one agent")
-names = (agents[0].get("kwargs") or {}).get("extensions") or []
-if names is None:
-    names = []
-if not isinstance(names, list):
-    raise SystemExit("kwargs.extensions must be a list of names")
-for name in names:
-    if not isinstance(name, str) or not name.strip():
-        raise SystemExit("extension names must be non-empty strings")
-    print(name)
+if not isinstance(agents, list) or not agents:
+    raise SystemExit("jobs must declare at least one agent")
+seen = set()
+for index, agent in enumerate(agents):
+    if not isinstance(agent, dict):
+        raise SystemExit(f"agents[{index}] must be an object")
+    kwargs = agent.get("kwargs") or {}
+    if not isinstance(kwargs, dict):
+        raise SystemExit(f"agents[{index}].kwargs must be an object")
+    names = kwargs.get("extensions") or []
+    if not isinstance(names, list):
+        raise SystemExit(f"agents[{index}].kwargs.extensions must be a list")
+    for name in names:
+        if not isinstance(name, str) or not name.strip():
+            raise SystemExit("extension names must be non-empty strings")
+        if name not in seen:
+            seen.add(name)
+            print(name)
 ' "${config_path}"
 }
 
@@ -129,8 +151,17 @@ targets = [
     for mount in mounts
     if isinstance(mount, dict)
 ]
-if "/opt/pi-extensions" not in targets:
-    raise SystemExit("install-only jobs with extensions must mount /opt/pi-extensions")
+required = [
+    "/opt/pi-extension-repo/extensions",
+    "/opt/pi-extension-repo/packages",
+    "/opt/pi-extension-repo/scripts",
+]
+missing = [target for target in required if target not in targets]
+if missing:
+    raise SystemExit(
+        "install-only jobs with extensions are missing mounts: "
+        + ", ".join(missing)
+    )
 if "/run/secrets/pi-eval-model-api-key" in targets:
     raise SystemExit("install-only jobs must not mount the model API key")
 if "/run/secrets/pi-eval-tavily-api-key" in targets:
@@ -161,7 +192,13 @@ required = [
     "/opt/pi-eval/runtime",
 ]
 if need_extensions:
-    required.append("/opt/pi-extensions")
+    required.extend(
+        [
+            "/opt/pi-extension-repo/extensions",
+            "/opt/pi-extension-repo/packages",
+            "/opt/pi-extension-repo/scripts",
+        ]
+    )
 if need_tavily:
     required.append("/run/secrets/pi-eval-tavily-api-key")
 missing = [target for target in required if target not in targets]

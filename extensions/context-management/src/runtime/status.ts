@@ -26,6 +26,7 @@ export function renderContextStatus(state: RuntimeState, context: ExtensionConte
 		`  Compactable: ${number(metrics?.compactableEstimate ?? 0)}  Over threshold: ${metrics?.overThreshold === true ? "yes" : "no"}`,
 		`  Pruned tool results: ${number(metrics?.prunedToolResults ?? state.prunedToolCallIds.size)}`,
 		`  Checkpoint: ${checkpoint}`,
+		`  Background: ${state.candidateLifecycle.phase}${state.candidateLifecycle.detail === null ? "" : ` (${state.candidateLifecycle.detail})`}`,
 		`  Blocking: ${state.blockingState ?? "none"}`,
 	];
 	return lines.join("\n");

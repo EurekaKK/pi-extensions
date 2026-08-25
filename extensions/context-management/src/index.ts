@@ -3,7 +3,7 @@ import { getAgentDir, withFileMutationQueue } from "@earendil-works/pi-coding-ag
 import { type ContextManagementConfigV1, type FileMutationQueue, initializeContextManagementConfig } from "./config.js";
 import { STATUS_COMMAND } from "./constants.js";
 import { ContextCoordinator } from "./runtime/coordinator.js";
-import { createRuntimeState } from "./runtime/state.js";
+import { createRuntimeState, type RuntimeState } from "./runtime/state.js";
 import { renderContextStatus } from "./runtime/status.js";
 import { maybeSpillToolResult } from "./spill.js";
 
@@ -25,7 +25,7 @@ export function registerContextManagementExtension(
 	pi: ExtensionAPI,
 	config: ContextManagementConfigV1,
 	dependencies: LoadContextManagementDependencies,
-): void {
+): RuntimeState {
 	const state = createRuntimeState();
 	const coordinator = new ContextCoordinator(pi, state, config);
 
@@ -62,6 +62,7 @@ export function registerContextManagementExtension(
 			return undefined;
 		}
 	});
+	return state;
 }
 
 function registerDisabledContextManagement(pi: ExtensionAPI, error: unknown): void {
