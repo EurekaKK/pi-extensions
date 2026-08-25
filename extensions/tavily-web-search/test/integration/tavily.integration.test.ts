@@ -36,7 +36,7 @@ describe.sequential("real Tavily integration", () => {
 				agentDir,
 				withFileMutationQueue,
 				fetch: globalThis.fetch,
-				readApiKey: () => apiKey,
+				readApiKeys: () => [apiKey],
 			},
 		);
 	});

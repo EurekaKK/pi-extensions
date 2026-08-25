@@ -23,10 +23,12 @@ scripts/install-extension.sh tavily-web-search
 
 Pi 对本地路径安装不运行 `npm install`；仓库脚本会先解析完整安装计划，再镜像 package，并把本包声明的内部 package 代码依赖递归 vendor 进副本。
 
-通过 `pi config` 启用或停用。启动 Pi 前提供：
+通过 `pi config` 启用或停用。启动 Pi 前提供 key（`TAVILY_API_KEYS` 优先，逗号分隔即成池；`TAVILY_API_KEY` 作为单 key 回退）：
 
 ```bash
-export TAVILY_API_KEY="<your Tavily API key>"
+export TAVILY_API_KEYS="<key1>,<key2>,<key3>"   # 可选：顺序即池顺序
+
+export TAVILY_API_KEY="<your Tavily API key>"   # 无池时的单 key 兼容
 ```
 
 extension 不会把 key 写入配置或 session。它在加载时读一次环境变量；修改后需重启 Pi。卸载：
@@ -70,7 +72,17 @@ rm -rf ~/.pi/agent/my-extensions/tavily-web-search
 - `maxResults`：1–20，Search 默认条数。
 - `searchTimeoutMs` / `extractTimeoutMs`：单次 HTTP 超时。
 
-未知字段或旧 schema 会使 extension 禁用（不注册工具、不联网）。缺少或空的 `TAVILY_API_KEY` 同样 fail closed：不注册工具、不向 Tavily 发请求。
+未知字段或旧 schema 会使 extension 禁用（不注册工具、不联网）。缺少或空的 `TAVILY_API_KEYS` / `TAVILY_API_KEY` 同样 fail closed：不注册工具、不向 Tavily 发请求。
+
+## API Key 池
+
+支持给 Tavily 配置多个 API key，遇到限额类错误自动往下换一个 key。
+
+- 池声明与顺序：`TAVILY_API_KEYS` 逗号分隔，按顺序组成池；只设 `TAVILY_API_KEY` 时视为单 key 池。
+- Active Key 从池首开始，遇到 **Key Error**（401 鉴权、432/433 额度、429 限流）就把 Active Key 前进一位（循环），并把本次调用记为失败返回给模型，错误文本告知已换到哪个 key（如 `key 1/3; rotated to key 2/3`）。extension 不自行重试，由模型自行决定重试本次调用（重试会自动用新 key）。
+- 换完一圈：两次成功之间连续 Key Error 数达到池大小时，错误文本升级为 `all N pool keys are unavailable; wait before retrying`，之后仍继续轮换、不熔断不冷却；任何一次成功清零计数。
+- 超时、取消和其他请求错误不是 Key Error，不触发轮换。
+- 轮换状态只存内存（Active Key 下标 + 连续失败计数），重启 Pi 后从池首重新开始；轮换消息只含 key 序号，不含 key 本身，也不会把 key 写入配置或磁盘。
 
 ## 注册资源
 
@@ -115,13 +127,13 @@ Search Envelope 外层为 `<tavily_search>`，每条 hit 含 title、URL、snipp
 
 - 只调用 `https://api.tavily.com/search` 和 `https://api.tavily.com/extract`。不做 Crawl、Map、Research。
 - 不把 Extract 绑到某次 Search；模型自己复制 URL。本机不滤域名或 IP。
-- 不缓存、不记 session 额度账本、不跨调用熔断、不自动重试 429。
+- 不缓存、不记 session 额度账本、不跨调用熔断。不重试任何错误：遇到 Key Error（401/432/433/429）时把 Active Key 前进一位并返回错误消息，由模型决定是否重试；连续 Key Error 达到池大小后报告全部 key 不可用。
 - 不在本 extension 里截断 Envelope。若同时启用 context-management，超大纯文本 tool result 由它 spill/prune；不启用时全文进入 context。
-- 401 / quota / 超时 / 取消返回工具错误，下一次调用仍会请求 Tavily。
+- 401 / quota / 超时 / 取消返回工具错误，下一次调用仍会请求 Tavily；其中 401/quota/429 会先轮换 key。
 
 ## 权限与副作用
 
-- 使用环境变量中的 Tavily API key 向 Tavily 发 HTTPS 请求。
+- 使用环境变量中的 Tavily API key（或 key 池）向 Tavily 发 HTTPS 请求。轮换状态（Active Key 下标、连续失败计数）仅存内存，不写入磁盘。
 - 无遥测、无后台上传、不把 key 写入磁盘。
 - 响应 `AbortSignal`：用户取消 turn 时中止 `fetch`。
 

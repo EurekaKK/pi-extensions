@@ -1,12 +1,26 @@
 export type TavilyErrorKind = "auth" | "quota" | "rate_limited" | "timeout" | "cancelled" | "request";
 
+export interface KeyErrorRotationInfo {
+	readonly keyIndex: number;
+	readonly poolSize: number;
+	readonly exhausted: boolean;
+}
+
 export class TavilyRequestError extends Error {
 	readonly kind: TavilyErrorKind;
+	readonly keyIndex?: number;
+	readonly poolSize?: number;
+	readonly exhausted?: boolean;
 
-	constructor(kind: TavilyErrorKind, message: string) {
+	constructor(kind: TavilyErrorKind, message: string, rotation?: KeyErrorRotationInfo) {
 		super(message);
 		this.name = "TavilyRequestError";
 		this.kind = kind;
+		if (rotation !== undefined) {
+			this.keyIndex = rotation.keyIndex;
+			this.poolSize = rotation.poolSize;
+			this.exhausted = rotation.exhausted;
+		}
 	}
 }
 

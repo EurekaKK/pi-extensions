@@ -110,7 +110,7 @@ describe("tavily_search and tavily_extract", () => {
 			agentDir,
 			withFileMutationQueue,
 			fetch: fetchMock,
-			readApiKey: () => "tvly-test",
+			readApiKeys: () => ["tvly-test"],
 		});
 
 		const created = await readFile(join(agentDir, "tavily-web-search", "config.json"), "utf8");
@@ -165,7 +165,7 @@ describe("tavily_search and tavily_extract", () => {
 			agentDir,
 			withFileMutationQueue,
 			fetch: fetchMock,
-			readApiKey: () => "tvly-test",
+			readApiKeys: () => ["tvly-test"],
 		});
 
 		await harness.tool("tavily_search").execute(
@@ -208,7 +208,7 @@ describe("tavily_search and tavily_extract", () => {
 			agentDir,
 			withFileMutationQueue,
 			fetch: fetchMock,
-			readApiKey: () => "tvly-test",
+			readApiKeys: () => ["tvly-test"],
 		});
 
 		const text = resultText(await harness.tool("tavily_search").execute("call-1", { query: "escape" }, undefined));
@@ -233,7 +233,7 @@ describe("tavily_search and tavily_extract", () => {
 			agentDir,
 			withFileMutationQueue,
 			fetch: fetchMock,
-			readApiKey: () => "tvly-test",
+			readApiKeys: () => ["tvly-test"],
 		});
 
 		const text = resultText(await harness.tool("tavily_search").execute("call-1", { query: "scores" }, undefined));
@@ -275,7 +275,7 @@ describe("tavily_search and tavily_extract", () => {
 			agentDir,
 			withFileMutationQueue,
 			fetch: fetchMock,
-			readApiKey: () => "tvly-test",
+			readApiKeys: () => ["tvly-test"],
 		});
 
 		const result = await harness.tool("tavily_extract").execute(
@@ -315,7 +315,7 @@ describe("tavily_search and tavily_extract", () => {
 			agentDir,
 			withFileMutationQueue,
 			fetch: fetchMock,
-			readApiKey: () => "tvly-test",
+			readApiKeys: () => ["tvly-test"],
 		});
 
 		await expect(harness.tool("tavily_search").execute("call-1", { query: "x" }, undefined)).rejects.toThrow(
@@ -334,7 +334,7 @@ describe("tavily_search and tavily_extract", () => {
 			agentDir,
 			withFileMutationQueue,
 			fetch: fetchMock,
-			readApiKey: () => "tvly-test",
+			readApiKeys: () => ["tvly-test"],
 		});
 		await expect(harness.tool("tavily_search").execute("call-1", { query: "x" }, undefined)).rejects.toThrow(/quota/i);
 		await expect(harness.tool("tavily_search").execute("call-2", { query: "y" }, undefined)).rejects.toThrow(/quota/i);
@@ -348,12 +348,31 @@ describe("tavily_search and tavily_extract", () => {
 			agentDir,
 			withFileMutationQueue,
 			fetch: fetchMock,
-			readApiKey: () => "tvly-test",
+			readApiKeys: () => ["tvly-test"],
 		});
 		await expect(harness.tool("tavily_search").execute("call-1", { query: "x" }, undefined)).rejects.toThrow(
 			/rate limited/i,
 		);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("rotates through the API key pool on limit errors and reports exhaustion after a full circle", async () => {
+		const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse(429, { detail: { error: "slow down" } }));
+		const harness = new ToolHarness();
+		await loadTavilyWebSearch(harness.api, {
+			agentDir,
+			withFileMutationQueue,
+			fetch: fetchMock,
+			readApiKeys: () => ["tvly-1", "tvly-2"],
+		});
+		const search = harness.tool("tavily_search");
+		await expect(search.execute("call-1", { query: "x" }, undefined)).rejects.toThrow(/key 1\/2.*rotated to key 2\/2/);
+		await expect(search.execute("call-2", { query: "y" }, undefined)).rejects.toThrow(
+			/all 2 pool keys are unavailable/,
+		);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		const headers = new Headers(fetchMock.mock.calls[1]?.[1]?.headers);
+		expect(headers.get("authorization")).toBe("Bearer tvly-2");
 	});
 
 	it("cancels the Tavily request when AbortSignal aborts", async () => {
@@ -369,7 +388,7 @@ describe("tavily_search and tavily_extract", () => {
 			agentDir,
 			withFileMutationQueue,
 			fetch: fetchMock,
-			readApiKey: () => "tvly-test",
+			readApiKeys: () => ["tvly-test"],
 		});
 		const controller = new AbortController();
 		const pending = harness.tool("tavily_search").execute("call-1", { query: "x" }, controller.signal);
@@ -408,7 +427,7 @@ describe("tavily_search and tavily_extract", () => {
 			agentDir,
 			withFileMutationQueue,
 			fetch: fetchMock,
-			readApiKey: () => "tvly-test",
+			readApiKeys: () => ["tvly-test"],
 		});
 		await expect(harness.tool("tavily_search").execute("call-1", { query: "x" }, undefined)).rejects.toThrow(
 			/timed out/i,
@@ -422,7 +441,7 @@ describe("tavily_search and tavily_extract", () => {
 			agentDir,
 			withFileMutationQueue,
 			fetch: fetchMock,
-			readApiKey: () => undefined,
+			readApiKeys: () => [],
 		});
 		expect(harness.host.tools).toEqual([]);
 		await harness.sessionStart();
@@ -442,7 +461,7 @@ describe("tavily_search and tavily_extract", () => {
 			agentDir,
 			withFileMutationQueue,
 			fetch: fetchMock,
-			readApiKey: () => "tvly-test",
+			readApiKeys: () => ["tvly-test"],
 		});
 		expect(harness.host.tools).toEqual([]);
 		await harness.sessionStart();
@@ -464,7 +483,7 @@ describe("tavily_search and tavily_extract", () => {
 			agentDir,
 			withFileMutationQueue,
 			fetch: fetchMock,
-			readApiKey: () => "tvly-test",
+			readApiKeys: () => ["tvly-test"],
 		});
 		const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
 		const render = (component: unknown): string => {
