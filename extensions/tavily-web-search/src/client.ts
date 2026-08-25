@@ -1,6 +1,7 @@
 import type { ExtractDepth, SearchDepth } from "./config.js";
 import { EXTRACT_ENDPOINT, SEARCH_ENDPOINT } from "./constants.js";
 import type { ExtractPage, SearchHit } from "./envelope.js";
+import type { KeyErrorRotationInfo, TavilyErrorKind } from "./errors.js";
 import { errorForStatus, TavilyRequestError } from "./errors.js";
 
 export interface SearchRequest {
@@ -24,8 +25,36 @@ export interface ExtractSuccess {
 }
 
 export interface TavilyClientOptions {
-	readonly apiKey: string;
+	readonly apiKeys: readonly string[];
 	readonly fetch: typeof globalThis.fetch;
+}
+
+const KEY_ERROR_KINDS: readonly TavilyErrorKind[] = ["auth", "quota", "rate_limited"];
+
+function isKeyError(error: TavilyRequestError): boolean {
+	return KEY_ERROR_KINDS.includes(error.kind);
+}
+
+function baseErrorText(kind: TavilyErrorKind): string {
+	if (kind === "auth") return "Tavily authentication failed";
+	if (kind === "quota") return "Tavily quota exceeded";
+	if (kind === "rate_limited") return "Tavily rate limited";
+	return "Tavily request failed";
+}
+
+function rotationMessage(
+	kind: TavilyErrorKind,
+	usedKey: number,
+	nextKey: number,
+	poolSize: number,
+	exhausted: boolean,
+): string {
+	const base = baseErrorText(kind);
+	if (poolSize === 1) return `${base} (key 1/1); the only pool key is unavailable; wait before retrying.`;
+	if (exhausted) {
+		return `${base} (key ${usedKey}/${poolSize}); all ${poolSize} pool keys are unavailable; wait before retrying.`;
+	}
+	return `${base} (key ${usedKey}/${poolSize}); rotated to key ${nextKey}/${poolSize}; please retry this call.`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -83,11 +112,14 @@ async function readJson(response: Response): Promise<unknown> {
 }
 
 export class TavilyClient {
-	readonly #apiKey: string;
+	readonly #apiKeys: readonly string[];
 	readonly #fetch: typeof globalThis.fetch;
+	#activeIndex = 0;
+	#consecutiveKeyErrors = 0;
 
 	constructor(options: TavilyClientOptions) {
-		this.#apiKey = options.apiKey;
+		if (options.apiKeys.length === 0) throw new Error("TavilyClient requires at least one API key");
+		this.#apiKeys = options.apiKeys;
 		this.#fetch = options.fetch;
 	}
 
@@ -124,6 +156,9 @@ export class TavilyClient {
 		timeoutMs: number,
 		userSignal: AbortSignal | undefined,
 	): Promise<unknown> {
+		const keyIndex = this.#activeIndex;
+		const apiKey = this.#apiKeys[keyIndex];
+		if (apiKey === undefined) throw new Error("Tavily API key pool is empty");
 		const timeoutSignal = AbortSignal.timeout(timeoutMs);
 		const combined = userSignal === undefined ? timeoutSignal : AbortSignal.any([userSignal, timeoutSignal]);
 		let response: Response;
@@ -131,7 +166,7 @@ export class TavilyClient {
 			response = await this.#fetch(url, {
 				method: "POST",
 				headers: {
-					authorization: `Bearer ${this.#apiKey}`,
+					authorization: `Bearer ${apiKey}`,
 					"content-type": "application/json",
 				},
 				body: JSON.stringify(payload),
@@ -142,7 +177,27 @@ export class TavilyClient {
 			const message = error instanceof Error ? error.message : String(error);
 			throw new TavilyRequestError("request", `Tavily request failed (${message})`);
 		}
-		if (!response.ok) throw errorForStatus(response.status);
+		if (!response.ok) {
+			const error = errorForStatus(response.status);
+			if (isKeyError(error)) throw this.#rotate(error, keyIndex);
+			throw error;
+		}
+		this.#consecutiveKeyErrors = 0;
 		return readJson(response);
+	}
+
+	#rotate(error: TavilyRequestError, keyIndex: number): TavilyRequestError {
+		const poolSize = this.#apiKeys.length;
+		this.#activeIndex = (keyIndex + 1) % poolSize;
+		this.#consecutiveKeyErrors += 1;
+		const exhausted = this.#consecutiveKeyErrors >= poolSize;
+		const usedKey = keyIndex + 1;
+		const nextKey = this.#activeIndex + 1;
+		const rotation: KeyErrorRotationInfo = { keyIndex: usedKey, poolSize, exhausted };
+		return new TavilyRequestError(
+			error.kind,
+			rotationMessage(error.kind, usedKey, nextKey, poolSize, exhausted),
+			rotation,
+		);
 	}
 }

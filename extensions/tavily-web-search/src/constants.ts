@@ -9,3 +9,5 @@ export const CONFIG_VERSION = 1;
 export const MAX_URLS_PER_EXTRACT = 20;
 export const MAX_INCLUDE_DOMAINS = 300;
 export const MAX_EXCLUDE_DOMAINS = 150;
+export const API_KEY_ENV_VAR = "TAVILY_API_KEY";
+export const API_KEYS_ENV_VAR = "TAVILY_API_KEYS";

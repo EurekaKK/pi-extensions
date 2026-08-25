@@ -6,14 +6,24 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { TavilyClient } from "./client.js";
 import { type FileMutationQueue, initializeTavilyConfig } from "./config.js";
-import { EXTENSION_ID } from "./constants.js";
+import { API_KEY_ENV_VAR, API_KEYS_ENV_VAR, EXTENSION_ID } from "./constants.js";
 import { registerTavilyTools } from "./tools.js";
 
 export interface LoadTavilyDependencies {
 	readonly agentDir: string;
 	readonly withFileMutationQueue: FileMutationQueue;
 	readonly fetch: typeof globalThis.fetch;
-	readonly readApiKey: () => string | undefined;
+	readonly readApiKeys: () => readonly string[];
+}
+
+export function resolveApiKeys(keysEnv: string | undefined, keyEnv: string | undefined): readonly string[] {
+	const pool = (keysEnv ?? "")
+		.split(",")
+		.map((entry) => entry.trim())
+		.filter((entry) => entry.length > 0);
+	if (pool.length > 0) return pool;
+	const single = keyEnv?.trim();
+	return single === undefined || single.length === 0 ? [] : [single];
 }
 
 function notify(context: ExtensionContext, message: string): void {
@@ -40,12 +50,15 @@ export async function loadTavilyWebSearch(pi: ExtensionAPI, dependencies: LoadTa
 			agentDir: dependencies.agentDir,
 			withFileMutationQueue: dependencies.withFileMutationQueue,
 		});
-		const apiKey = dependencies.readApiKey()?.trim();
-		if (apiKey === undefined || apiKey.length === 0) {
-			registerDisabled(pi, `${EXTENSION_ID} is disabled: TAVILY_API_KEY is missing or empty.`);
+		const apiKeys = dependencies.readApiKeys();
+		if (apiKeys.length === 0) {
+			registerDisabled(
+				pi,
+				`${EXTENSION_ID} is disabled: ${API_KEYS_ENV_VAR} / ${API_KEY_ENV_VAR} is missing or empty.`,
+			);
 			return;
 		}
-		registerTavilyTools(pi, initialized.config, new TavilyClient({ apiKey, fetch: dependencies.fetch }));
+		registerTavilyTools(pi, initialized.config, new TavilyClient({ apiKeys, fetch: dependencies.fetch }));
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
 		registerDisabled(pi, `${EXTENSION_ID} is disabled: ${detail}`);
@@ -57,7 +70,7 @@ export default async function tavilyWebSearch(pi: ExtensionAPI): Promise<void> {
 		agentDir: getAgentDir(),
 		withFileMutationQueue,
 		fetch: globalThis.fetch,
-		readApiKey: () => process.env.TAVILY_API_KEY,
+		readApiKeys: () => resolveApiKeys(process.env[API_KEYS_ENV_VAR], process.env[API_KEY_ENV_VAR]),
 	});
 }
 
