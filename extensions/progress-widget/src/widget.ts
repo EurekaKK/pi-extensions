@@ -64,9 +64,6 @@ function agentCounts(agents: readonly ProgressWidgetSubagentV1[]): Record<Progre
 
 function compactLines(state: ProgressWidgetState): string[] {
 	const lines: string[] = [];
-	if (state.goal !== null) {
-		lines.push(goalHeader(state.goal), `${GOAL_MARK[state.goal.phase]} ${state.goal.objective}`);
-	}
 	const agents = visibleAgents(state.agents);
 	if (agents.length > 0) {
 		const counts = agentCounts(agents);
@@ -82,17 +79,14 @@ function compactLines(state: ProgressWidgetState): string[] {
 			state.todos.find((todo) => todo.status === "pending");
 		if (first !== undefined) lines.push(`${TODO_MARK[first.status]} ${first.content}`);
 	}
+	if (state.goal !== null) {
+		lines.push(goalHeader(state.goal), `${GOAL_MARK[state.goal.phase]} ${state.goal.objective}`);
+	}
 	return lines;
 }
 
 function fullLines(state: ProgressWidgetState): string[] {
 	const lines: string[] = [];
-	if (state.goal !== null) {
-		lines.push(goalHeader(state.goal), `Objective: ${state.goal.objective}`);
-		if (state.goal.blockedReason !== undefined) {
-			lines.push(`Blocker: ${state.goal.blockedReason.code}: ${state.goal.blockedReason.message}`);
-		}
-	}
 	const agents = visibleAgents(state.agents);
 	if (agents.length > 0) {
 		const counts = agentCounts(agents);
@@ -107,6 +101,12 @@ function fullLines(state: ProgressWidgetState): string[] {
 		const counts = todoCounts(state.todos);
 		lines.push(`Todos · ${counts.inProgress} in progress · ${counts.pending} pending · ${counts.completed} completed`);
 		for (const todo of state.todos) lines.push(`${TODO_MARK[todo.status]} ${todo.content}`);
+	}
+	if (state.goal !== null) {
+		lines.push(goalHeader(state.goal), `Objective: ${state.goal.objective}`);
+		if (state.goal.blockedReason !== undefined) {
+			lines.push(`Blocker: ${state.goal.blockedReason.code}: ${state.goal.blockedReason.message}`);
+		}
 	}
 	return lines;
 }

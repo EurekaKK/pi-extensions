@@ -5,6 +5,7 @@ import { type GoalToolRuntime, registerGoalTools } from "../src/tools.js";
 
 interface CapturedTool {
 	readonly name: string;
+	readonly description?: string;
 	readonly promptGuidelines?: readonly string[];
 	execute(
 		toolCallId: string,
@@ -50,6 +51,20 @@ describe("goal v2 model tools", () => {
 		expect(new Set(guidelines.map((item) => item?.join("\n"))).size).toBe(1);
 		expect(guidelines[0]?.join("")).toContain("at least 4 consecutive goal rounds");
 		expect(guidelines[0]?.join("")).toContain("useful remaining work is not blocked");
+		expect(guidelines[0]?.join("")).toContain("Never call create_goal merely because a request seems long-running");
+	});
+
+	it("describes create_goal as explicit user opt-in instead of inferred intent", () => {
+		const runtime = {
+			service: {},
+			config: DEFAULT_CONFIG,
+			authority: () => ({ kind: "direct-human" }),
+		} as unknown as GoalToolRuntime;
+		const create = toolAt(capture(runtime), 1);
+
+		expect(create.description).toContain("explicitly asks to create or use Goal");
+		expect(create.description).toContain("Never infer Goal intent");
+		expect(create.description).toContain("/goal commands are handled directly");
 	});
 
 	it("create_goal requires direct-human authority", async () => {

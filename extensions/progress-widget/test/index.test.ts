@@ -32,24 +32,24 @@ const state: ProgressWidgetState = {
 describe("progress widget lines", () => {
 	it("builds the bounded compact view in fixed section order", () => {
 		expect(buildProgressWidgetLines(state, "compact")).toEqual([
-			"Goal · active · round 2/8 · armed",
-			"◐ Ship the UI",
 			"Subagents · 1 running · 0 interrupting · 1 completed · 0 interrupted · 0 failed",
 			"Todos · 1 in progress · 1 pending · 0 completed",
 			"◐ Implement dashboard",
+			"Goal · active · round 2/8 · armed",
+			"◐ Ship the UI",
 		]);
 	});
 
 	it("shows complete entities in the full view", () => {
 		expect(buildProgressWidgetLines(state, "full")).toEqual([
-			"Goal · active · round 2/8 · armed",
-			"Objective: Ship the UI",
 			"Subagents · 1 running · 0 interrupting · 1 completed · 0 interrupted · 0 failed",
 			"◐ running · child-1 · Review UI",
 			"✓ completed · child-2 · Audit tests",
 			"Todos · 1 in progress · 1 pending · 0 completed",
 			"◐ Implement dashboard",
 			"○ Run tests",
+			"Goal · active · round 2/8 · armed",
+			"Objective: Ship the UI",
 		]);
 	});
 
@@ -88,10 +88,10 @@ describe("progress widget extension", () => {
 		expect(host.ui.setWidget).toHaveBeenLastCalledWith(
 			PROGRESS_WIDGET_KEY,
 			[
-				"Goal · active · round 2/8 · armed",
-				"◐ Ship the UI",
 				"Todos · 1 in progress · 1 pending · 0 completed",
 				"◐ Implement dashboard",
+				"Goal · active · round 2/8 · armed",
+				"◐ Ship the UI",
 			],
 			{ placement: "aboveEditor" },
 		);

@@ -161,7 +161,7 @@ export function registerGoalTools(pi: { registerTool(tool: unknown): void }, run
 			name: "create_goal",
 			label: "Create goal",
 			description:
-				"Create one persisted same-session completion goal when the current direct human request is a long-running objective that should continue across autonomous goal rounds. You may infer that intent without requiring the user to say 'create a goal'. Do not use this for trivial single-turn work.",
+				"Create one persisted same-session completion goal only when the current direct human request explicitly asks to create or use Goal. Never infer Goal intent from task length, complexity, number of steps, or suitability for autonomous rounds. User /goal commands are handled directly without this tool.",
 			parameters: Type.Object(
 				{
 					objective: Type.String(),

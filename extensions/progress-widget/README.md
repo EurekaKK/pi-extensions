@@ -54,7 +54,7 @@ Goal、Sub-agent 和 Todo 不会被自动卸载。
 
 每个 session 从 Compact View 开始。快捷键只切换 widget；Pi 的 `Ctrl+O` 独立控制 transcript 卡片展开。
 
-Compact View 固定按 Goal → Sub-agent → Todo 排列：Goal 两行，Sub-agent 一行，Todo 两行。Full View 显示完整 Goal、所有 Todo，以及仍有活动 Run 时的全部直接 Sub-agent ID、状态和 description。
+Compact View 固定按 Sub-agent → Todo → Goal 排列：Sub-agent 一行，Todo 两行，Goal 两行。Full View 使用相同区段顺序，显示仍有活动 Run 时的全部直接 Sub-agent ID、状态和 description、所有 Todo，以及完整 Goal。
 
 ## 限制
 

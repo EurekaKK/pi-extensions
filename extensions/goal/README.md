@@ -59,8 +59,10 @@ rm -rf ~/.pi/agent/my-extensions/goal
 ## 模型工具
 
 - `get_goal`：读取当前目标、CAS ref、phase、rounds 和 activation。
-- `create_goal(objective, max_goal_rounds?)`：在当前直接人类轮次创建目标。
+- `create_goal(objective, max_goal_rounds?)`：仅当当前直接人类输入明确要求创建或使用 Goal 时创建目标。
 - `update_goal(goal_id, revision, action, ...)`：edit / pause / resume / complete / blocked。
+
+创建 Goal 采用显式 opt-in：长任务、多步骤、复杂度或适合自动续跑都不构成 `create_goal` 调用依据，模型不得自行推断 Goal 意图。用户也可以直接使用 `/goal <objective>` 创建，不经过模型工具。
 
 所有更新必须使用 `get_goal` 返回的精确 `goal_id` 和 `revision`。三条工具共用一条 `promptGuidelines`，内容随 `blockedAfterConsecutiveRounds` 生成。TUI 工具卡折叠时显示语义化 Goal 摘要，展开后保留完整 JSON 工具结果。
 
