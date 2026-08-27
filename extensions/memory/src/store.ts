@@ -10,7 +10,7 @@ import {
 	MEMORY_STORE_VERSION,
 } from "./constants.js";
 import { MemoryError } from "./errors.js";
-import { characterLength } from "./normalize.js";
+import { characterLength, hasRejectedControlCharacters } from "./normalize.js";
 
 export interface MemoryProvenanceV1 {
 	readonly sessionId: string;
@@ -93,7 +93,9 @@ function isNonEmptyString(value: unknown, maxChars: number, rejectControl: boole
 }
 
 function isValidTimestamp(value: unknown): value is string {
-	return typeof value === "string" && !Number.isNaN(Date.parse(value));
+	if (typeof value !== "string") return false;
+	const timestamp = Date.parse(value);
+	return !Number.isNaN(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
 function validateProvenance(value: unknown, path: string): MemoryProvenanceV1 {
@@ -174,11 +176,20 @@ function validateRecord(value: unknown, index: number, limits: ClassifyMemorySto
 	if (value.summary.trim().length === 0) {
 		throw new MemoryError(MEMORY_STORE_CORRUPT, `${path}.summary must not be blank`);
 	}
+	if (hasRejectedControlCharacters(value.summary)) {
+		throw new MemoryError(MEMORY_STORE_CORRUPT, `${path}.summary contains unsupported control characters`);
+	}
 	if (typeof value.content !== "string" || characterLength(value.content) > limits.maxContentChars) {
 		throw new MemoryError(
 			MEMORY_STORE_OVER_LIMIT,
 			`${path}.content exceeds the ${limits.maxContentChars} character limit`,
 		);
+	}
+	if (value.content.trim().length === 0) {
+		throw new MemoryError(MEMORY_STORE_CORRUPT, `${path}.content must not be blank`);
+	}
+	if (hasRejectedControlCharacters(value.content)) {
+		throw new MemoryError(MEMORY_STORE_CORRUPT, `${path}.content contains unsupported control characters`);
 	}
 	const supersedes = value.supersedes === null ? null : validateReference(value.supersedes, path);
 	const provenance = validateProvenance(value.provenance, path);
@@ -323,6 +334,13 @@ export function validateMemoryStoreDocument(
 	}
 	const records = value.records.map((record, index) => validateRecord(record, index, limits));
 	validateSupersessionGraph(records);
+	const highestRecordRevision = records.reduce((highest, record) => Math.max(highest, record.revision), 0);
+	if (revision < highestRecordRevision) {
+		throw new MemoryError(
+			MEMORY_STORE_CORRUPT,
+			`store revision ${revision} cannot be below record revision ${highestRecordRevision}`,
+		);
+	}
 	const computedBytes = Buffer.byteLength(JSON.stringify(value));
 	if (computedBytes > limits.maxStoreBytes) {
 		throw new MemoryError(

@@ -99,6 +99,7 @@ describe("Memory Store classification", () => {
 		["unknown top-level field", { ...storeFixture(), extra: true }],
 		["missing records field", { ...storeFixture(), records: undefined }],
 		["store revision negative", { ...storeFixture(), revision: -1 }],
+		["store revision behind record revision", storeFixture({ revision: 0 }, [recordFixture({ revision: 1 })])],
 	])("classifies corrupt Stores (%s)", async (_name, fixture) => {
 		const cwd = await tempCwd();
 		await writeStore(cwd, fixture as object);
@@ -187,7 +188,11 @@ describe("Memory Store classification", () => {
 
 	it.each([
 		["blank summary", recordFixture({ summary: "   " })],
+		["blank content", recordFixture({ content: "   " })],
+		["control character in summary", recordFixture({ summary: "bad\u0000summary" })],
+		["control character in content", recordFixture({ content: "bad\u0000content" })],
 		["invalid createdAt", recordFixture({ createdAt: "not a date" })],
+		["non-canonical createdAt", recordFixture({ createdAt: "2025-01-01" })],
 		["invalid updatedAt", recordFixture({ updatedAt: "2025-99-99T00:00:00.000Z" })],
 		["control character in id", recordFixture({ id: "rec-\u0001" })],
 		["missing provenance author", recordFixture({ provenance: provenanceFixture({ author: "" }) })],

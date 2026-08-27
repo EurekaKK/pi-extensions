@@ -729,7 +729,7 @@ describe("memory-forget command adapter", () => {
 			JSON.stringify({
 				version: 1,
 				schema: "memory.store.v1",
-				revision: 1,
+				revision: 2,
 				directory: { id: directoryId },
 				records: [
 					{
@@ -770,7 +770,7 @@ describe("memory-forget command adapter", () => {
 		expect(notify?.text).not.toContain("command leaf content");
 		expect(notify?.text).not.toContain("command base content");
 		const persisted = await storeJson(cwd);
-		expect(persisted.revision).toBe(2);
+		expect(persisted.revision).toBe(3);
 		expect(persisted.records).toHaveLength(0);
 		expect(before).not.toEqual(await readFile(storePath));
 	});

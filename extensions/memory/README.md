@@ -56,7 +56,7 @@ Agent，并可能影响它的推理、工具选择与后续行为。警告降低
   即每个目录自己的 Pi 配置区内，不放在 Pi agent 目录，也没有全局目录注册表。
 - **严格版本化 Store**：单个版本化 JSON 文档（`version: 1`、`schema: memory.store.v1`、单调 `revision`、
   目录元数据、记录数组）。记录包含身份、版本、active/superseded 状态、摘要、内容、supersedes 引用、来源
-  （provenance）与时间戳。
+  （provenance）与时间戳；时间戳必须是规范 `Date.toISOString()` 形式，Store revision 不得低于任何记录 revision。
 - **首次写入安全初始化**：Store 缺失时，第一次写入在同一事务内创建 `0700` 的 Store 目录（支持的平台上）、
   作用域 ignore 标记 `<storeDir>/.gitignore`（内容 `*`，使 Store 默认排除在 Git 之外；已有用户标记时原样
   保留，绝不覆盖）与 `0600` 的 `store.json`。
