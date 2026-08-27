@@ -10,6 +10,7 @@ import {
 	MEMORY_STORE_VERSION,
 } from "./constants.js";
 import { MemoryError } from "./errors.js";
+import { characterLength } from "./normalize.js";
 
 export interface MemoryProvenanceV1 {
 	readonly sessionId: string;
@@ -164,7 +165,7 @@ function validateRecord(value: unknown, index: number, limits: ClassifyMemorySto
 		throw new MemoryError(MEMORY_STORE_CORRUPT, `${path}.state must be "active" or "superseded"`);
 	}
 	const state = value.state;
-	if (typeof value.summary !== "string" || value.summary.length > limits.maxSummaryChars) {
+	if (typeof value.summary !== "string" || characterLength(value.summary) > limits.maxSummaryChars) {
 		throw new MemoryError(
 			MEMORY_STORE_OVER_LIMIT,
 			`${path}.summary exceeds the ${limits.maxSummaryChars} character limit`,
@@ -173,7 +174,7 @@ function validateRecord(value: unknown, index: number, limits: ClassifyMemorySto
 	if (value.summary.trim().length === 0) {
 		throw new MemoryError(MEMORY_STORE_CORRUPT, `${path}.summary must not be blank`);
 	}
-	if (typeof value.content !== "string" || value.content.length > limits.maxContentChars) {
+	if (typeof value.content !== "string" || characterLength(value.content) > limits.maxContentChars) {
 		throw new MemoryError(
 			MEMORY_STORE_OVER_LIMIT,
 			`${path}.content exceeds the ${limits.maxContentChars} character limit`,

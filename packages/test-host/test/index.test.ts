@@ -77,6 +77,28 @@ describe("FakePiHost", () => {
 		});
 	});
 
+	it("exposes the current leaf and exact-entry lookup like the real session manager", () => {
+		const host = new FakePiHost();
+		appendUserMessageEntry(host, "root", null, "start", 1);
+		const appendedId = host.appendCustomMessageEntry("test-host:leaf", "leaf context", true);
+
+		expect(host.context.sessionManager.getLeafId()).toBe(appendedId);
+		expect(host.context.sessionManager.getLeafEntry()).toMatchObject({
+			id: appendedId,
+			type: "custom_message",
+			customType: "test-host:leaf",
+		});
+		expect(host.context.sessionManager.getEntry("root")).toMatchObject({ id: "root" });
+		expect(host.context.sessionManager.getEntry("missing")).toBeUndefined();
+		expect(host.context.sessionManager.getEntry("root")?.parentId).toBeNull();
+	});
+
+	it("reports an empty leaf before any entry is appended", () => {
+		const host = new FakePiHost();
+		expect(host.context.sessionManager.getLeafId()).toBeNull();
+		expect(host.context.sessionManager.getLeafEntry()).toBeUndefined();
+	});
+
 	it("does not reuse persisted entry ids after a branch fixture is restored", () => {
 		const host = new FakePiHost();
 		host.branchEntry("entry-1", null, {

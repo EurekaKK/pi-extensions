@@ -6,6 +6,7 @@ import {
 	type SessionEntry,
 	type SessionEntryBase,
 } from "@earendil-works/pi-coding-agent";
+
 import { vi } from "vitest";
 
 /**
@@ -166,6 +167,9 @@ export class FakePiHost {
 					if (this.failBranchRead) throw new Error("branch unavailable");
 					return [...this.#entries];
 				},
+				getLeafId: () => this.#entries.at(-1)?.id ?? null,
+				getLeafEntry: (): SessionEntry | undefined => this.#entries.at(-1),
+				getEntry: (id: string): SessionEntry | undefined => this.#entries.find((entry) => entry.id === id),
 				buildContextEntries: () => buildPiContextEntries([...this.#entries]),
 			},
 		} as unknown as ExtensionContext;
