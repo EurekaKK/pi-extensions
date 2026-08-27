@@ -6,11 +6,15 @@
 - 本文件面向修改仓库的 Agent，只记录会影响实现、验证和发布的项目约束。
 - extension 的功能、权限、副作用和用法写在各自的 `README.md` 中，不堆积到根文档。
 
+## 需求记录
+
+- 当用户明确提出尚未登记的新需求时，在实现前读取 `requirements/README.md`，按其中流程分配需求 ID、记录描述并创建分支；同一需求的补充工作沿用已有 ID 和分支。
+
 ## 仓库结构
 
 - 所有 extension 位于 `extensions/<name>/`；只有 `extensions/` 下的一级目录代表独立 extension。
 - `templates/extension/` 是新 extension 的脚手架来源。首次创建 extension 时若模板尚不存在，应先建立与本文件一致的模板。
-- `scripts/` 仅存放仓库级开发与发布辅助脚本，不包含 extension 运行时代码。本地安装统一走
+- `scripts/` 仅存放仓库级开发、需求记录与发布辅助脚本，不包含 extension 运行时代码。本地安装统一走
   `scripts/install-extension.sh`：先把 package 复制到 `~/.pi/agent/my-extensions/<name>/` 再
   `pi install` 该副本（Pi 对本地路径只登记不复制）；脚本先由 `scripts/install-plan.mjs` 递归解析
   安装 closure（`piExtensionDependencies` 依赖 extension 与 `packages/*` 代码依赖，检测

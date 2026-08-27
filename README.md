@@ -6,6 +6,7 @@
 
 - 本文件面向使用者和维护者，说明项目结构、开发入口和 extension 索引。
 - [`AGENTS.md`](./AGENTS.md) 面向修改仓库的 Agent，定义实现、验证和发布约束。
+- [`requirements/`](./requirements/) 保存仓库级需求及其 ID、描述和实现分支，创建流程见目录内说明。
 - 各 extension 的具体功能、权限和使用方法记录在各自的 `README.md` 中。
 
 ## 约定结构
@@ -16,6 +17,7 @@ pi-extensions/
 ├── README.md
 ├── package.json
 ├── package-lock.json
+├── requirements/
 ├── eval/
 ├── extensions/
 │   └── <extension-name>/
@@ -25,6 +27,7 @@ pi-extensions/
 ```
 
 - `extensions/`：独立 extension packages。
+- `requirements/`：每个仓库级需求一份 Markdown 记录，并通过仓库脚本分配 ID、创建分支。
 - `eval/`：独立的 Python Harbor 评测夹具，不是 Pi extension，也不加入 npm workspaces。
 - `templates/extension/`：创建新 extension 的标准脚手架。
 - `scripts/`：仓库级开发与发布辅助脚本。
@@ -84,6 +87,10 @@ npm test --workspaces
 ```
 
 代码任务在交付前验证受影响的 extension；版本发布前执行全仓验证，并使用本机 Pi 进行真实加载 smoke test。详细要求见 [`AGENTS.md`](./AGENTS.md)。
+
+## 需求记录
+
+新需求在实现前通过仓库命令分配 `REQ-NNNN`、写入描述，并创建 `req-NNNN-<slug>` 分支；完整命令、命名规则和并发限制见 [`requirements/README.md`](./requirements/README.md)。
 
 ## Extension 状态
 

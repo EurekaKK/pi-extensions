@@ -9,7 +9,9 @@
 	},
 	"scripts": {
 		"check": "npm run check --workspaces --if-present",
-		"test": "npm test --workspaces --if-present && npm run test:install-script",
-		"test:install-script": "node --test \"scripts/test/*.test.mjs\""
+		"test": "npm test --workspaces --if-present && npm run test:repository-scripts",
+		"test:repository-scripts": "node --test \"scripts/test/*.test.mjs\"",
+		"test:install-script": "npm run test:repository-scripts",
+		"requirement:new": "node scripts/new-requirement.mjs"
 	}
 }
