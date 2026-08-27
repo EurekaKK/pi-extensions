@@ -1,3 +1,4 @@
+import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
 	PROGRESS_WIDGET_ATTACH_EVENT,
 	PROGRESS_WIDGET_KEY,
@@ -8,7 +9,17 @@ import {
 import { FakePiHost } from "test-host";
 import { describe, expect, it } from "vitest";
 import progressWidget from "../src/index.js";
-import { buildProgressWidgetLines, type ProgressWidgetState } from "../src/widget.js";
+import { buildProgressWidgetLines, ProgressWidgetComponent, type ProgressWidgetState } from "../src/widget.js";
+
+function taggedTheme(variant: () => string = () => ""): Theme {
+	const tag = (name: string, text: string) => `<${variant()}${name}>${text}</${variant()}${name}>`;
+	const partial: Pick<Theme, "fg" | "bold" | "strikethrough"> = {
+		fg: (color: ThemeColor, text: string) => tag(color, text),
+		bold: (text: string) => tag("bold", text),
+		strikethrough: (text: string) => tag("strike", text),
+	};
+	return partial as unknown as Theme;
+}
 
 const state: ProgressWidgetState = {
 	goal: {
@@ -59,6 +70,97 @@ describe("progress widget lines", () => {
 			agents: [{ id: "child-1", description: "Review UI", status: "completed" as const }],
 		};
 		expect(buildProgressWidgetLines(settled, "compact").some((line) => line.startsWith("Subagents"))).toBe(false);
+	});
+});
+
+describe("progress widget TUI styling", () => {
+	const stylingState: ProgressWidgetState = {
+		goal: {
+			id: "goal-1",
+			objective: "Ship the UI",
+			phase: "blocked",
+			roundsStarted: 2,
+			maxGoalRounds: 8,
+			activation: "armed",
+			blockedReason: { code: "dependency", message: "Waiting for API" },
+		},
+		todos: [
+			{ content: "Implement dashboard", status: "in_progress" },
+			{ content: "Run tests", status: "pending" },
+			{ content: "Check theme", status: "completed" },
+		],
+		agents: [
+			{ id: "run-1", description: "Implement UI", status: "running" },
+			{ id: "run-2", description: "Stopping work", status: "interrupting" },
+			{ id: "run-3", description: "Reviewed UI", status: "completed" },
+			{ id: "run-4", description: "Stopped work", status: "interrupted" },
+			{ id: "run-5", description: "Audit failed", status: "failed" },
+		],
+	};
+
+	it("styles titles, metadata, status, IDs, and body text as separate segments", () => {
+		const rendered = new ProgressWidgetComponent(stylingState, "full", taggedTheme()).render(1_000);
+
+		expect(rendered[0]).toBe(
+			"<accent><bold>Subagents</bold></accent><accent> · 1 running · 1 interrupting · 1 completed · 1 interrupted · 1 failed</accent>",
+		);
+		expect(rendered[1]).toBe(
+			"<accent>◐ running</accent><muted> · </muted><dim>run-1</dim><muted> · </muted><text>Implement UI</text>",
+		);
+		expect(rendered[2]).toBe(
+			"<warning>… interrupting</warning><muted> · </muted><dim>run-2</dim><muted> · </muted><text>Stopping work</text>",
+		);
+		expect(rendered[3]).toBe(
+			"<success>✓ completed</success><muted> · </muted><dim>run-3</dim><muted> · </muted><muted>Reviewed UI</muted>",
+		);
+		expect(rendered[4]).toBe(
+			"<muted>■ interrupted</muted><muted> · </muted><dim>run-4</dim><muted> · </muted><muted>Stopped work</muted>",
+		);
+		expect(rendered[5]).toBe(
+			"<error>! failed</error><muted> · </muted><dim>run-5</dim><muted> · </muted><text>Audit failed</text>",
+		);
+		expect(rendered[7]).toBe("<accent>◐</accent> <text>Implement dashboard</text>");
+		expect(rendered[8]).toBe("<muted>○</muted> <muted>Run tests</muted>");
+		expect(rendered[9]).toBe("<success>✓</success> <muted><strike>Check theme</strike></muted>");
+		expect(rendered[11]).toBe("<accent>Objective:</accent> <text>Ship the UI</text>");
+		expect(rendered[12]).toBe("<error>Blocker: dependency</error><text>: Waiting for API</text>");
+		expect(rendered.join("\n").match(/<bold>/g)).toHaveLength(3);
+	});
+
+	it.each([
+		["active", "<accent>◐</accent> <text>Ship the UI</text>"],
+		["paused", "<muted>Ⅱ</muted> <muted>Ship the UI</muted>"],
+		["blocked", "<error>!</error> <text>Ship the UI</text>"],
+		["complete", "<success>✓</success> <muted><strike>Ship the UI</strike></muted>"],
+	] as const)("styles the %s Goal phase without coloring its whole objective", (phase, expected) => {
+		const phaseState: ProgressWidgetState = {
+			goal: {
+				id: "goal-1",
+				objective: "Ship the UI",
+				phase,
+				roundsStarted: 2,
+				maxGoalRounds: 8,
+				activation: "armed",
+			},
+			todos: [],
+			agents: [],
+		};
+
+		expect(new ProgressWidgetComponent(phaseState, "compact", taggedTheme()).render(1_000)[1]).toBe(expected);
+	});
+
+	it("recomputes semantic colors after a theme change invalidates the component", () => {
+		let variant = "light:";
+		const component = new ProgressWidgetComponent(
+			state,
+			"compact",
+			taggedTheme(() => variant),
+		);
+
+		expect(component.render(1_000)[2]).toContain("<light:accent>◐</light:accent> <light:text>Implement dashboard");
+		variant = "dark:";
+		component.invalidate();
+		expect(component.render(1_000)[2]).toContain("<dark:accent>◐</dark:accent> <dark:text>Implement dashboard");
 	});
 });
 

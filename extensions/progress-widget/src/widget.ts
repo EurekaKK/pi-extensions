@@ -1,4 +1,4 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type {
 	ProgressWidgetGoalStateV1,
@@ -25,9 +25,40 @@ const AGENT_MARK: Readonly<Record<ProgressWidgetSubagentRunStatus, string>> = Ob
 	failed: "!",
 });
 
-function goalHeader(goal: ProgressWidgetGoalStateV1): string {
+type GoalPhase = ProgressWidgetGoalStateV1["phase"];
+type TodoStatus = ProgressWidgetTodoItemV1["status"];
+type VisualStatus = GoalPhase | TodoStatus | ProgressWidgetSubagentRunStatus;
+type WidgetSection = "Subagents" | "Todos" | "Goal";
+
+const STATUS_COLOR: Readonly<Record<VisualStatus, ThemeColor>> = Object.freeze({
+	active: "accent",
+	paused: "muted",
+	blocked: "error",
+	complete: "success",
+	in_progress: "accent",
+	pending: "muted",
+	completed: "success",
+	running: "accent",
+	interrupting: "warning",
+	interrupted: "muted",
+	failed: "error",
+});
+
+type WidgetRow =
+	| { readonly kind: "header"; readonly title: WidgetSection; readonly metadata: string }
+	| {
+			readonly kind: "agent";
+			readonly status: ProgressWidgetSubagentRunStatus;
+			readonly id: string;
+			readonly description: string;
+	  }
+	| { readonly kind: "status"; readonly status: GoalPhase | TodoStatus; readonly content: string }
+	| { readonly kind: "objective"; readonly phase: GoalPhase; readonly content: string }
+	| { readonly kind: "blocker"; readonly code: string; readonly message: string };
+
+function goalMetadata(goal: ProgressWidgetGoalStateV1): string {
 	const blocker = goal.blockedReason === undefined ? "" : ` · ${goal.blockedReason.code}`;
-	return `Goal · ${goal.phase} · round ${goal.roundsStarted}/${goal.maxGoalRounds} · ${goal.activation}${blocker}`;
+	return `${goal.phase} · round ${goal.roundsStarted}/${goal.maxGoalRounds} · ${goal.activation}${blocker}`;
 }
 
 function todoCounts(todos: readonly ProgressWidgetTodoItemV1[]): {
@@ -62,71 +93,142 @@ function agentCounts(agents: readonly ProgressWidgetSubagentV1[]): Record<Progre
 	return counts;
 }
 
-function compactLines(state: ProgressWidgetState): string[] {
-	const lines: string[] = [];
+function header(title: WidgetSection, metadata: string): WidgetRow {
+	return { kind: "header", title, metadata };
+}
+
+function compactRows(state: ProgressWidgetState): WidgetRow[] {
+	const rows: WidgetRow[] = [];
 	const agents = visibleAgents(state.agents);
 	if (agents.length > 0) {
 		const counts = agentCounts(agents);
-		lines.push(
-			`Subagents · ${counts.running} running · ${counts.interrupting} interrupting · ${counts.completed} completed · ${counts.interrupted} interrupted · ${counts.failed} failed`,
+		rows.push(
+			header(
+				"Subagents",
+				`${counts.running} running · ${counts.interrupting} interrupting · ${counts.completed} completed · ${counts.interrupted} interrupted · ${counts.failed} failed`,
+			),
 		);
 	}
 	if (state.todos.length > 0) {
 		const counts = todoCounts(state.todos);
-		lines.push(`Todos · ${counts.inProgress} in progress · ${counts.pending} pending · ${counts.completed} completed`);
+		rows.push(
+			header("Todos", `${counts.inProgress} in progress · ${counts.pending} pending · ${counts.completed} completed`),
+		);
 		const first =
 			state.todos.find((todo) => todo.status === "in_progress") ??
 			state.todos.find((todo) => todo.status === "pending");
-		if (first !== undefined) lines.push(`${TODO_MARK[first.status]} ${first.content}`);
+		if (first !== undefined) rows.push({ kind: "status", status: first.status, content: first.content });
 	}
 	if (state.goal !== null) {
-		lines.push(goalHeader(state.goal), `${GOAL_MARK[state.goal.phase]} ${state.goal.objective}`);
+		rows.push(header("Goal", goalMetadata(state.goal)), {
+			kind: "status",
+			status: state.goal.phase,
+			content: state.goal.objective,
+		});
 	}
-	return lines;
+	return rows;
 }
 
-function fullLines(state: ProgressWidgetState): string[] {
-	const lines: string[] = [];
+function fullRows(state: ProgressWidgetState): WidgetRow[] {
+	const rows: WidgetRow[] = [];
 	const agents = visibleAgents(state.agents);
 	if (agents.length > 0) {
 		const counts = agentCounts(agents);
-		lines.push(
-			`Subagents · ${counts.running} running · ${counts.interrupting} interrupting · ${counts.completed} completed · ${counts.interrupted} interrupted · ${counts.failed} failed`,
+		rows.push(
+			header(
+				"Subagents",
+				`${counts.running} running · ${counts.interrupting} interrupting · ${counts.completed} completed · ${counts.interrupted} interrupted · ${counts.failed} failed`,
+			),
 		);
 		for (const agent of agents) {
-			lines.push(`${AGENT_MARK[agent.status]} ${agent.status} · ${agent.id} · ${agent.description}`);
+			rows.push({
+				kind: "agent",
+				status: agent.status,
+				id: agent.id,
+				description: agent.description,
+			});
 		}
 	}
 	if (state.todos.length > 0) {
 		const counts = todoCounts(state.todos);
-		lines.push(`Todos · ${counts.inProgress} in progress · ${counts.pending} pending · ${counts.completed} completed`);
-		for (const todo of state.todos) lines.push(`${TODO_MARK[todo.status]} ${todo.content}`);
-	}
-	if (state.goal !== null) {
-		lines.push(goalHeader(state.goal), `Objective: ${state.goal.objective}`);
-		if (state.goal.blockedReason !== undefined) {
-			lines.push(`Blocker: ${state.goal.blockedReason.code}: ${state.goal.blockedReason.message}`);
+		rows.push(
+			header("Todos", `${counts.inProgress} in progress · ${counts.pending} pending · ${counts.completed} completed`),
+		);
+		for (const todo of state.todos) {
+			rows.push({ kind: "status", status: todo.status, content: todo.content });
 		}
 	}
-	return lines;
+	if (state.goal !== null) {
+		rows.push(header("Goal", goalMetadata(state.goal)), {
+			kind: "objective",
+			phase: state.goal.phase,
+			content: state.goal.objective,
+		});
+		if (state.goal.blockedReason !== undefined) {
+			rows.push({
+				kind: "blocker",
+				code: state.goal.blockedReason.code,
+				message: state.goal.blockedReason.message,
+			});
+		}
+	}
+	return rows;
+}
+
+function statusMark(status: GoalPhase | TodoStatus): string {
+	if (status === "active" || status === "paused" || status === "blocked" || status === "complete") {
+		return GOAL_MARK[status];
+	}
+	return TODO_MARK[status];
+}
+
+function plainRow(row: WidgetRow): string {
+	if (row.kind === "header") return `${row.title} · ${row.metadata}`;
+	if (row.kind === "agent") {
+		return `${AGENT_MARK[row.status]} ${row.status} · ${row.id} · ${row.description}`;
+	}
+	if (row.kind === "status") return `${statusMark(row.status)} ${row.content}`;
+	if (row.kind === "objective") return `Objective: ${row.content}`;
+	return `Blocker: ${row.code}: ${row.message}`;
+}
+
+function progressWidgetRows(state: ProgressWidgetState, view: ProgressWidgetView): WidgetRow[] {
+	return view === "compact" ? compactRows(state) : fullRows(state);
 }
 
 export function buildProgressWidgetLines(state: ProgressWidgetState, view: ProgressWidgetView): string[] {
-	return view === "compact" ? compactLines(state) : fullLines(state);
+	return progressWidgetRows(state, view).map(plainRow);
 }
 
-function styledLine(line: string, theme: Theme): string {
-	if (line.startsWith("Goal ·") || line.startsWith("Subagents ·") || line.startsWith("Todos ·")) {
-		return theme.fg("accent", theme.bold(line));
+function styledBody(status: GoalPhase | TodoStatus, content: string, theme: Theme): string {
+	if (status === "complete" || status === "completed") {
+		return theme.fg("muted", theme.strikethrough(content));
 	}
-	if (line.startsWith("! ") || line.startsWith("! failed") || line.startsWith("Blocker:")) {
-		return theme.fg("error", line);
+	if (status === "paused" || status === "pending") return theme.fg("muted", content);
+	return theme.fg("text", content);
+}
+
+function styledRow(row: WidgetRow, theme: Theme): string {
+	if (row.kind === "header") {
+		return theme.fg("accent", theme.bold(row.title)) + theme.fg("accent", ` · ${row.metadata}`);
 	}
-	if (line.startsWith("✓ completed ·")) return theme.fg("success", line);
-	if (line.startsWith("✓ ")) return theme.fg("muted", theme.strikethrough(line));
-	if (line.startsWith("◐ ") || line.startsWith("◐ running")) return theme.fg("warning", line);
-	if (line.startsWith("Ⅱ ") || line.startsWith("○ ") || line.startsWith("■ ")) return theme.fg("muted", line);
-	return theme.fg("text", line);
+	if (row.kind === "agent") {
+		const descriptionColor = row.status === "completed" || row.status === "interrupted" ? "muted" : "text";
+		return (
+			theme.fg(STATUS_COLOR[row.status], `${AGENT_MARK[row.status]} ${row.status}`) +
+			theme.fg("muted", " · ") +
+			theme.fg("dim", row.id) +
+			theme.fg("muted", " · ") +
+			theme.fg(descriptionColor, row.description)
+		);
+	}
+	if (row.kind === "status") {
+		return `${theme.fg(STATUS_COLOR[row.status], statusMark(row.status))} ${styledBody(row.status, row.content, theme)}`;
+	}
+	if (row.kind === "objective") {
+		return `${theme.fg("accent", "Objective:")} ${styledBody(row.phase, row.content, theme)}`;
+	}
+	return `${theme.fg("error", `Blocker: ${row.code}`)}${theme.fg("text", `: ${row.message}`)}`;
 }
 
 export class ProgressWidgetComponent implements Component {
@@ -142,12 +244,14 @@ export class ProgressWidgetComponent implements Component {
 
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
-		const lines = buildProgressWidgetLines(this.#state, this.#view).map((line) => styledLine(line, this.#theme));
+		const lines = progressWidgetRows(this.#state, this.#view).map((row) => styledRow(row, this.#theme));
 		if (this.#view === "compact") return lines.map((line) => truncateToWidth(line, safeWidth));
 		return lines.flatMap((line) => wrapTextWithAnsi(line, safeWidth));
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		// Theme segments are resolved from the live Theme proxy on every render; no styled output is cached.
+	}
 }
 
 export function applySnapshot(state: ProgressWidgetState, snapshot: ProgressWidgetSnapshotV1): ProgressWidgetState {

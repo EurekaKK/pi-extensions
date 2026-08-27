@@ -56,6 +56,15 @@ Goal、Sub-agent 和 Todo 不会被自动卸载。
 
 Compact View 固定按 Sub-agent → Todo → Goal 排列：Sub-agent 一行，Todo 两行，Goal 两行。Full View 使用相同区段顺序，显示仍有活动 Run 时的全部直接 Sub-agent ID、状态和 description、所有 Todo，以及完整 Goal。
 
+### TUI 显示样式
+
+- 区段标题使用主题 `accent` 色和粗体；统计、轮次等重要概要与 `Objective:` 标签同样使用 `accent` 强调色，但保持正常字重。
+- 状态图标和 Sub-agent 状态词使用语义色：活动项为 `accent`、正在中断为 `warning`、完成为 `success`、失败或阻塞为 `error`，其余为 `muted`。
+- 正文保持正常字重；活动与失败项使用 `text`，待处理、暂停和已结算项使用 `muted`，完成的 Todo 与 Goal 另加删除线。
+- Sub-agent ID 使用 `dim`。颜色只作用于对应片段，不给整行统一着色，也不硬编码 RGB 或背景色。
+
+若终端跟随系统切换浅色/深色外观，Pi 主题也应设置为 `light/dark` 或对应的自定义浅色/深色主题对。RPC 模式仍发送无 ANSI 样式的纯文本。
+
 ## 限制
 
 - 只统计主 Agent 的直接 Sub-agent，不包含 descendants。
