@@ -97,6 +97,7 @@ npm test --workspaces
 | --- | --- | --- | --- |
 | `context-management` | experimental | 按 dsh 方式 spill、prune 并生成结构化 Checkpoint，接管 Pi 原生 compaction | [`extensions/context-management`](./extensions/context-management/) |
 | `goal` | experimental | 通过模型工具管理 session Goal，并由 Goal Round Driver 自动续跑 active goal | [`extensions/goal`](./extensions/goal/) |
+| `memory` | experimental | 为精确 Working Directory 保存并动态召回本地长期记忆 | [`extensions/memory`](./extensions/memory/) |
 | `progress-widget` | experimental | 在输入栏上方统一投影 Goal、直接 Sub-agent Run 与 Todo，支持 Compact / Full View | [`extensions/progress-widget`](./extensions/progress-widget/) |
 | `sub-agent` | experimental | 在父 Pi 进程内运行 spawn/fork 子 Agent，支持后台 continuable 会话、report 与结算通知 | [`extensions/sub-agent`](./extensions/sub-agent/) |
 | `tavily-web-search` | experimental | 通过 Tavily Search/Extract 对接公开网页，结果包在 Tavily Envelope 中 | [`extensions/tavily-web-search`](./extensions/tavily-web-search/) |

@@ -7,6 +7,7 @@ import {
 	type FileMutationQueue,
 	initializeStrictConfig,
 	MAX_CONFIG_BYTES,
+	readStrictJsonFile,
 	StrictConfigError,
 } from "../src/index.js";
 
@@ -178,5 +179,89 @@ describe("initializeStrictConfig", () => {
 
 		expect(seenValue).toEqual({ version: 1, enabled: true });
 		expect(seenPath).toBe(result.configPath);
+	});
+});
+
+describe("readStrictJsonFile", () => {
+	async function file(): Promise<string> {
+		const agentDir = await tempAgentDir();
+		return join(agentDir, "data.json");
+	}
+
+	it("parses a strict JSON file", async () => {
+		const filePath = await file();
+		await writeFile(filePath, '{"version":1,"enabled":true}\n', "utf8");
+
+		await expect(readStrictJsonFile({ filePath, maxBytes: 1024 })).resolves.toEqual({
+			version: 1,
+			enabled: true,
+		});
+	});
+
+	it("rejects a missing file with the stable missing reason", async () => {
+		const filePath = join(await tempAgentDir(), "absent.json");
+
+		const promise = readStrictJsonFile({ filePath, maxBytes: 1024 });
+
+		await expect(promise).rejects.toBeInstanceOf(StrictConfigError);
+		await expect(promise).rejects.toMatchObject({ reason: "missing" });
+	});
+
+	it("rejects a directory with the not-regular-file reason and stable message", async () => {
+		const filePath = await file();
+		await mkdir(filePath, { recursive: true });
+
+		const promise = readStrictJsonFile({ filePath, maxBytes: 1024 });
+
+		await expect(promise).rejects.toMatchObject({ reason: "not-regular-file" });
+		await expect(promise).rejects.toThrow("path must be a regular file");
+	});
+
+	it("rejects an oversized file with the over-limit reason and stable message", async () => {
+		const filePath = await file();
+		await writeFile(filePath, `"${"a".repeat(2048)}"`, "utf8");
+
+		const promise = readStrictJsonFile({ filePath, maxBytes: 1024 });
+
+		await expect(promise).rejects.toMatchObject({ reason: "over-limit" });
+		await expect(promise).rejects.toThrow("file exceeds 1024 UTF-8 bytes");
+	});
+
+	it("rejects invalid UTF-8 with the invalid-utf8 reason", async () => {
+		const filePath = await file();
+		await writeFile(filePath, new Uint8Array([0xff, 0xfe, 0x00]));
+
+		await expect(readStrictJsonFile({ filePath, maxBytes: 1024 })).rejects.toMatchObject({
+			reason: "invalid-utf8",
+		});
+	});
+
+	it("rejects non-strict JSON with the invalid-json reason", async () => {
+		const filePath = await file();
+		await writeFile(filePath, "{not json", "utf8");
+
+		const promise = readStrictJsonFile({ filePath, maxBytes: 1024 });
+
+		await expect(promise).rejects.toMatchObject({ reason: "invalid-json" });
+		await expect(promise).rejects.toThrow("file is not strict JSON");
+	});
+
+	it("uses a custom label in diagnostics while keeping the strict JSON messages stable", async () => {
+		const filePath = await file();
+		await mkdir(filePath, { recursive: true });
+
+		const promise = readStrictJsonFile({ filePath, maxBytes: 1024, label: "memory store" });
+
+		await expect(promise).rejects.toMatchObject({ reason: "not-regular-file" });
+		await expect(promise).rejects.toThrow("memory store path must be a regular file");
+	});
+
+	it("rejects a pre-aborted signal with the aborted reason", async () => {
+		const filePath = await file();
+		await writeFile(filePath, '{"ok":true}', "utf8");
+
+		await expect(readStrictJsonFile({ filePath, maxBytes: 1024, signal: AbortSignal.abort() })).rejects.toMatchObject({
+			reason: "aborted",
+		});
 	});
 });

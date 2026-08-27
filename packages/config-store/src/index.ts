@@ -11,16 +11,37 @@ export type FileMutationQueue = <T>(filePath: string, mutation: () => Promise<T>
 const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 /**
+ * Stable, machine-readable failures raised by {@link readStrictJsonFile} and
+ * reused by every strict-JSON consumer for classification without parsing
+ * human-readable messages. `invalid` is the catch-all default for schema
+ * validation errors raised by callers' `validate` functions.
+ */
+export type StrictConfigErrorReason =
+	| "missing"
+	| "inspect-failed"
+	| "not-regular-file"
+	| "over-limit"
+	| "read-failed"
+	| "changed-during-read"
+	| "invalid-utf8"
+	| "invalid-json"
+	| "aborted"
+	| "invalid";
+
+/**
  * Raised for every rejected config file. `message` always starts with the
- * config path followed by a stable, test-asserted reason.
+ * config path followed by a stable, test-asserted reason. `reason` carries the
+ * machine-readable failure kind for callers that must classify errors.
  */
 export class StrictConfigError extends Error {
 	readonly configPath: string;
+	readonly reason: StrictConfigErrorReason;
 
-	constructor(configPath: string, reason: string) {
-		super(`${configPath}: ${reason}`);
+	constructor(configPath: string, message: string, reason: StrictConfigErrorReason = "invalid") {
+		super(`${configPath}: ${message}`);
 		this.name = "StrictConfigError";
 		this.configPath = configPath;
+		this.reason = reason;
 	}
 }
 
@@ -65,45 +86,106 @@ function fail(configPath: string, reason: string): never {
 	throw new StrictConfigError(configPath, reason);
 }
 
-async function readStrictJson(configPath: string): Promise<unknown> {
+function abort(filePath: string, signal: AbortSignal | undefined): void {
+	if (signal?.aborted === true) {
+		throw new StrictConfigError(filePath, "read was aborted", "aborted");
+	}
+}
+
+function isAbortError(error: unknown): boolean {
+	return (
+		(error instanceof Error && error.name === "AbortError") ||
+		(isNodeError(error) && (error.code === "ABORT_ERR" || error.code === "ECANCELED"))
+	);
+}
+
+/**
+ * Additive, generic strict-JSON reader shared by every config/store consumer.
+ *
+ * Reads one regular file with bounded bytes (stat before + byte-length after),
+ * guards against replacement while reading via a second stat, decodes with
+ * fatal UTF-8, and requires strict JSON. Failures throw {@link StrictConfigError}
+ * with a stable `reason` so callers can classify missing / unreadable / corrupt
+ * / over-limit / aborted without parsing messages. `signal`, when provided, is
+ * honored at every await boundary.
+ */
+export interface ReadStrictJsonFileOptions {
+	readonly filePath: string;
+	readonly maxBytes: number;
+	/** Human label used in diagnostic messages; defaults to `"config"`. */
+	readonly label?: string;
+	readonly signal?: AbortSignal;
+}
+
+export async function readStrictJsonFile(options: ReadStrictJsonFileOptions): Promise<unknown> {
+	const { filePath, maxBytes, signal } = options;
+	const label = options.label ?? "config";
+	abort(filePath, signal);
+
 	let before: Awaited<ReturnType<typeof lstat>>;
 	try {
-		before = await lstat(configPath);
+		before = await lstat(filePath);
 	} catch (error) {
-		fail(configPath, `cannot inspect config (${describeIoError(error)})`);
+		if (signal?.aborted === true || isAbortError(error)) {
+			throw new StrictConfigError(filePath, "read was aborted", "aborted");
+		}
+		if (isNodeError(error) && error.code === "ENOENT") {
+			throw new StrictConfigError(filePath, `cannot inspect ${label} (filesystem error ENOENT)`, "missing");
+		}
+		throw new StrictConfigError(filePath, `cannot inspect ${label} (${describeIoError(error)})`, "inspect-failed");
 	}
-	if (!before.isFile()) fail(configPath, "config path must be a regular file");
-	if (before.size > MAX_CONFIG_BYTES) fail(configPath, `file exceeds ${MAX_CONFIG_BYTES} UTF-8 bytes`);
+	if (!before.isFile())
+		throw new StrictConfigError(filePath, `${label} path must be a regular file`, "not-regular-file");
+	if (before.size > maxBytes)
+		throw new StrictConfigError(filePath, `file exceeds ${maxBytes} UTF-8 bytes`, "over-limit");
+	abort(filePath, signal);
 
 	let bytes: Uint8Array;
 	try {
-		bytes = await readFile(configPath);
+		bytes = signal === undefined ? await readFile(filePath) : await readFile(filePath, { signal });
 	} catch (error) {
-		fail(configPath, `cannot read config (${describeIoError(error)})`);
+		if (signal?.aborted === true || isAbortError(error)) {
+			throw new StrictConfigError(filePath, "read was aborted", "aborted");
+		}
+		throw new StrictConfigError(filePath, `cannot read ${label} (${describeIoError(error)})`, "read-failed");
 	}
-	if (bytes.byteLength > MAX_CONFIG_BYTES) fail(configPath, `file exceeds ${MAX_CONFIG_BYTES} UTF-8 bytes`);
+	if (bytes.byteLength > maxBytes)
+		throw new StrictConfigError(filePath, `file exceeds ${maxBytes} UTF-8 bytes`, "over-limit");
+	abort(filePath, signal);
 
 	let after: Awaited<ReturnType<typeof lstat>>;
 	try {
-		after = await lstat(configPath);
+		after = await lstat(filePath);
 	} catch (error) {
-		fail(configPath, `cannot re-check config (${describeIoError(error)})`);
+		if (signal?.aborted === true || isAbortError(error)) {
+			throw new StrictConfigError(filePath, "read was aborted", "aborted");
+		}
+		throw new StrictConfigError(filePath, `cannot re-check ${label} (${describeIoError(error)})`, "inspect-failed");
 	}
+	abort(filePath, signal);
 	if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size) {
-		fail(configPath, "config changed while it was being read");
+		throw new StrictConfigError(filePath, `${label} changed while it was being read`, "changed-during-read");
 	}
 
 	let text: string;
 	try {
 		text = TEXT_DECODER.decode(bytes);
 	} catch {
-		fail(configPath, "file is not valid UTF-8");
+		throw new StrictConfigError(filePath, "file is not valid UTF-8", "invalid-utf8");
 	}
 	try {
 		return JSON.parse(text) as unknown;
 	} catch {
-		return fail(configPath, "file is not strict JSON");
+		throw new StrictConfigError(filePath, "file is not strict JSON", "invalid-json");
 	}
+}
+
+/**
+ * Bounded strict-JSON read for a config file, applying the config byte budget
+ * and the default `config` label for stable, unchanged diagnostics.
+ */
+async function readStrictJson(configPath: string): Promise<unknown> {
+	return readStrictJsonFile({ filePath: configPath, maxBytes: MAX_CONFIG_BYTES });
 }
 
 async function writeDefaultConfig(configPath: string, defaultText: string): Promise<boolean> {

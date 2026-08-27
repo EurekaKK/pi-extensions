@@ -1,0 +1,40 @@
+{
+	"name": "memory",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"license": "MIT",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"keywords": [
+		"pi-package"
+	],
+	"files": [
+		"index.ts",
+		"src/**/*.ts",
+		"README.md"
+	],
+	"scripts": {
+		"check": "biome check . && tsc --noEmit",
+		"test": "vitest run"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"dependencies": {
+		"config-store": "*"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.4",
+		"@types/node": "^22.20.1",
+		"test-host": "*",
+		"typescript": "^7.0.2",
+		"vitest": "^4.1.10"
+	}
+}
