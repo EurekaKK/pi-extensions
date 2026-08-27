@@ -1,4 +1,11 @@
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+	buildContextEntries as buildPiContextEntries,
+	type CustomMessageEntry,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type SessionEntry,
+	type SessionEntryBase,
+} from "@earendil-works/pi-coding-agent";
 import { vi } from "vitest";
 
 /**
@@ -51,6 +58,8 @@ export interface FakePiHostOptions {
 	readonly mode?: ExtensionContext["mode"];
 	readonly hasUI?: boolean;
 	readonly sessionId?: string;
+	/** Working Directory exposed through the fake ExtensionContext. */
+	readonly cwd?: string;
 }
 
 export class FakePiHost {
@@ -82,11 +91,13 @@ export class FakePiHost {
 	readonly #mode: ExtensionContext["mode"];
 	readonly #hasUI: boolean;
 	readonly #sessionId: string;
+	readonly #cwd: string;
 
 	constructor(options: FakePiHostOptions = {}) {
 		this.#mode = options.mode ?? "tui";
 		this.#hasUI = options.hasUI ?? true;
 		this.#sessionId = options.sessionId ?? "session-1";
+		this.#cwd = options.cwd ?? process.cwd();
 
 		this.api = {
 			on: (event: string, handler: Handler) => {
@@ -125,12 +136,9 @@ export class FakePiHost {
 			},
 			appendEntry: (customType: string, data: unknown) => {
 				if (this.failAppend) throw new Error("disk unavailable");
-				const parent = this.#entries.at(-1);
 				const entry = {
 					type: "custom",
-					id: `entry-${this.#nextId++}`,
-					parentId: parent?.id ?? null,
-					timestamp: new Date().toISOString(),
+					...this.#entryBase(),
 					customType,
 					data,
 				} as SessionEntry;
@@ -144,6 +152,7 @@ export class FakePiHost {
 		} as unknown as ExtensionAPI;
 
 		this.context = {
+			cwd: this.#cwd,
 			mode: this.#mode,
 			hasUI: this.#hasUI,
 			ui: {
@@ -157,12 +166,20 @@ export class FakePiHost {
 					if (this.failBranchRead) throw new Error("branch unavailable");
 					return [...this.#entries];
 				},
+				buildContextEntries: () => buildPiContextEntries([...this.#entries]),
 			},
 		} as unknown as ExtensionContext;
 	}
 
 	async emit(event: string, payload: Record<string, unknown> = {}): Promise<void> {
-		for (const handler of this.#handlers.get(event) ?? []) await handler(payload, this.context);
+		await this.emitResults(event, payload);
+	}
+
+	/** Run handlers in registration order and expose each raw lifecycle result. */
+	async emitResults(event: string, payload: Record<string, unknown> = {}): Promise<readonly unknown[]> {
+		const results: unknown[] = [];
+		for (const handler of this.#handlers.get(event) ?? []) results.push(await handler(payload, this.context));
+		return results;
 	}
 
 	emitBus(channel: string, data: unknown): void {
@@ -181,7 +198,43 @@ export class FakePiHost {
 		this.#entries = [...entries];
 	}
 
+	/**
+	 * Seed an already-persisted custom message directly on the active fake branch.
+	 * This fixture helper does not invoke ExtensionAPI append failure or capture controls.
+	 */
+	appendCustomMessageEntry<T = unknown>(
+		customType: string,
+		content: CustomMessageEntry<T>["content"],
+		display: boolean,
+		details?: T,
+	): string {
+		const entry = {
+			type: "custom_message",
+			...this.#entryBase(),
+			customType,
+			content,
+			display,
+			...(details === undefined ? {} : { details }),
+		} as SessionEntry;
+		this.#entries.push(entry);
+		return entry.id;
+	}
+
 	branchEntry(id: string, parentId: string | null, data: Record<string, unknown>): void {
-		this.#entries.push({ id, parentId, timestamp: new Date().toISOString(), ...data } as SessionEntry);
+		this.#entries.push({ ...data, ...this.#entryBase({ id, parentId }) } as SessionEntry);
+	}
+
+	#entryBase(identity?: { readonly id: string; readonly parentId: string | null }): Omit<SessionEntryBase, "type"> {
+		return {
+			id: identity?.id ?? this.#nextEntryId(),
+			parentId: identity === undefined ? (this.#entries.at(-1)?.id ?? null) : identity.parentId,
+			timestamp: new Date().toISOString(),
+		};
+	}
+
+	#nextEntryId(): string {
+		let id = `entry-${this.#nextId++}`;
+		while (this.#entries.some((entry) => entry.id === id)) id = `entry-${this.#nextId++}`;
+		return id;
 	}
 }
