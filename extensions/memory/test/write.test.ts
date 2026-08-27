@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type ExtensionContext, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
@@ -16,9 +16,14 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG, type MemoryConfigV1 } from "../src/config.js";
 import {
 	MEMORY_ABORTED,
+	MEMORY_IDENTITY_COLLISION,
 	MEMORY_INPUT_REJECTED,
+	MEMORY_STATUS_COMMAND,
 	MEMORY_STORE_IGNORE_CONTENT,
 	MEMORY_STORE_IGNORE_FILE_NAME,
+	MEMORY_TARGET_INACTIVE,
+	MEMORY_TARGET_NOT_FOUND,
+	MEMORY_TARGET_STALE,
 	MEMORY_WRITE_DENIED,
 	MEMORY_WRITE_TOOL,
 } from "../src/constants.js";
@@ -29,9 +34,11 @@ import { getMemoryStoreDirectory, getMemoryStorePath } from "../src/store-layout
 import { storeFixture } from "./fixtures.js";
 
 interface WriteParms {
-	readonly operation: "add";
+	readonly operation: "add" | "supersede";
 	readonly summary: string;
 	readonly content: string;
+	readonly targetId?: string;
+	readonly targetRevision?: number;
 }
 
 interface WriteResult {
@@ -92,6 +99,33 @@ class MemoryHarness {
 		return (await this.writeTool().execute(
 			"call-1",
 			params as never,
+			undefined,
+			undefined,
+			this.host.context,
+		)) as WriteResult;
+	}
+
+	async add(summary: string, content: string): Promise<{ id: string; revision: number }> {
+		const result = await this.write({ operation: "add", summary, content });
+		const record = asRecord(asRecord(result.details).record);
+		return { id: String(record.id), revision: Number(record.revision) };
+	}
+
+	async statusText(): Promise<string> {
+		const command = this.host.commands.get(MEMORY_STATUS_COMMAND);
+		if (command === undefined) throw new Error(`missing command ${MEMORY_STATUS_COMMAND}`);
+		await command.handler("", this.host.context);
+		const call = this.host.ui.notify.mock.calls.at(-1);
+		if (call === undefined) throw new Error("no status notification was emitted");
+		return String(call[0]);
+	}
+
+	async read(id: string, revision?: number): Promise<WriteResult> {
+		const tool = this.host.tools.find((candidate) => candidate.name === "memory_read");
+		if (tool === undefined) throw new Error("missing read tool");
+		return (await tool.execute(
+			"call-r",
+			{ id, ...(revision === undefined ? {} : { revision }) } as never,
 			undefined,
 			undefined,
 			this.host.context,
@@ -591,5 +625,431 @@ describe("memory_write mode safety", () => {
 			expect(persisted.records[0]?.content).toBe(`content in ${mode}`);
 			await expect(readdir(getMemoryStoreDirectory(cwd))).resolves.toContain("store.json");
 		}
+	});
+});
+
+describe("memory_write supersede at the loaded seam", () => {
+	it("appends an immutable successor, supersedes only the target, and returns a dual-record receipt", async () => {
+		const cwd = await tempCwd();
+		const h = new MemoryHarness(cwd);
+		await h.input("interactive");
+		const { id: targetId, revision: targetRevision } = await h.add(
+			"npm workspaces",
+			"The monorepo is managed with npm workspaces; never mix pnpm or Yarn.",
+		);
+
+		const result = await h.write({
+			operation: "supersede",
+			targetId,
+			targetRevision,
+			summary: "npm workspaces (corrected)",
+			content: "The monorepo is managed with npm workspaces; pnpm is allowed in strict mode.",
+		});
+
+		const receipt = asRecord(result.details);
+		expect(receipt.operation).toBe("supersede");
+		expect(receipt.outcome).toBe("superseded");
+		expect(receipt.previousStoreRevision).toBe(1);
+		expect(receipt.storeRevision).toBe(2);
+
+		const record = asRecord(receipt.record);
+		expect(record.id).toMatch(/^memory-[0-9a-f]{24}$/u);
+		expect(record.id).not.toBe(targetId);
+		expect(record.revision).toBe(2);
+		expect(record.state).toBe("active");
+		expect(record.supersedes).toEqual({ id: targetId, revision: 1 });
+		expect(asRecord(record.provenance).author).toBe("primary-agent");
+
+		// The receipt identifies both the replacement and the replaced record.
+		const replaced = asRecord(receipt.replaced);
+		expect(replaced.id).toBe(targetId);
+		expect(replaced.revision).toBe(1);
+		expect(replaced.state).toBe("superseded");
+		expect(replaced.content).toBe("The monorepo is managed with npm workspaces; never mix pnpm or Yarn.");
+
+		const contentText = String((result.content[0] as { text?: string }).text ?? "");
+		expect(contentText).toContain("memory_write · superseded");
+		expect(contentText).toContain("The monorepo is managed with npm workspaces; never mix pnpm or Yarn.");
+		expect(contentText).toContain("The monorepo is managed with npm workspaces; pnpm is allowed in strict mode.");
+		expect(contentText).toContain(`Supersedes: ${targetId} revision 1`);
+		expect(contentText).toContain("Replaced record");
+
+		const persisted = await storeJson(cwd);
+		expect(persisted.revision).toBe(2);
+		expect(persisted.records).toHaveLength(2);
+		const oldRecord = persisted.records.find((candidate) => candidate.id === targetId);
+		if (oldRecord === undefined) throw new Error("target record missing");
+		expect(asRecord(oldRecord).state).toBe("superseded");
+		// Historical content and provenance are preserved untouched.
+		expect(asRecord(oldRecord).content).toBe("The monorepo is managed with npm workspaces; never mix pnpm or Yarn.");
+	});
+
+	it("builds a multi-step chain where only the leaf stays active and revision is monotonic", async () => {
+		const cwd = await tempCwd();
+		const h = new MemoryHarness(cwd);
+		await h.input("interactive");
+		const first = await h.add("base", "base content");
+		const second = await h.write({
+			operation: "supersede",
+			targetId: first.id,
+			targetRevision: first.revision,
+			summary: "second",
+			content: "second content",
+		});
+		const secondRecord = asRecord(asRecord(second.details).record);
+		const third = await h.write({
+			operation: "supersede",
+			targetId: String(secondRecord.id),
+			targetRevision: Number(secondRecord.revision),
+			summary: "third",
+			content: "third content",
+		});
+		const thirdRecord = asRecord(asRecord(third.details).record);
+		expect(thirdRecord.revision).toBe(3);
+
+		const persisted = await storeJson(cwd);
+		expect(persisted.revision).toBe(3);
+		expect(persisted.records).toHaveLength(3);
+		const states = new Map(persisted.records.map((record) => [String(asRecord(record).id), asRecord(record).state]));
+		expect(states.get(first.id)).toBe("superseded");
+		expect(states.get(String(secondRecord.id))).toBe("superseded");
+		expect(states.get(String(thirdRecord.id))).toBe("active");
+
+		const statusText = await h.statusText();
+		expect(statusText).toContain("Store revision: 3");
+		expect(statusText).toContain("Records: 1 active · 2 superseded");
+	});
+
+	it("treats an identical normalized replacement as a transactional no-op", async () => {
+		const cwd = await tempCwd();
+		const h = new MemoryHarness(cwd);
+		await h.input("interactive");
+		const { id: targetId } = await h.add(
+			"npm workspaces",
+			"The monorepo uses npm workspaces; never mix pnpm.\nKeep going.",
+		);
+		const storePath = getMemoryStorePath(cwd);
+		const before = await readFile(storePath);
+
+		// CRLF folding normalizes to the exact target text (\n vs \r\n).
+		const result = await h.write({
+			operation: "supersede",
+			targetId,
+			targetRevision: 1,
+			summary: "npm workspaces",
+			content: "The monorepo uses npm workspaces; never mix pnpm.\r\nKeep going.",
+		});
+
+		const receipt = asRecord(result.details);
+		expect(receipt.operation).toBe("supersede");
+		expect(receipt.outcome).toBe("no-op");
+		expect(receipt.record).toMatchObject({ id: targetId, revision: 1, state: "active" });
+		await expect(readFile(storePath)).resolves.toEqual(before);
+		await expect(storeJson(cwd)).resolves.toMatchObject({ revision: 1 });
+		const contentText = String((result.content[0] as { text?: string }).text ?? "");
+		expect(contentText).toContain("identical");
+	});
+
+	it("rejects a missing target with a stable error and no byte changes", async () => {
+		const cwd = await tempCwd();
+		const h = new MemoryHarness(cwd);
+		await h.input("interactive");
+		await h.add("s", "content");
+		const storePath = getMemoryStorePath(cwd);
+		const before = await readFile(storePath);
+
+		await expect(
+			h.write({
+				operation: "supersede",
+				targetId: "memory-000000000000000000000000",
+				targetRevision: 1,
+				summary: "s",
+				content: "replacement",
+			}),
+		).rejects.toMatchObject({ code: MEMORY_TARGET_NOT_FOUND });
+		await expect(readFile(storePath)).resolves.toEqual(before);
+	});
+
+	it("rejects a stale revision of an existing target with no byte changes", async () => {
+		const cwd = await tempCwd();
+		const h = new MemoryHarness(cwd);
+		await h.input("interactive");
+		const { id: targetId } = await h.add("base", "content A");
+		const storePath = getMemoryStorePath(cwd);
+		const before = await readFile(storePath);
+
+		await expect(
+			h.write({
+				operation: "supersede",
+				targetId,
+				targetRevision: 9,
+				summary: "other",
+				content: "content B",
+			}),
+		).rejects.toMatchObject({ code: MEMORY_TARGET_STALE });
+		await expect(readFile(storePath)).resolves.toEqual(before);
+	});
+
+	it("rejects an already-superseded target with no byte changes", async () => {
+		const cwd = await tempCwd();
+		const h = new MemoryHarness(cwd);
+		await h.input("interactive");
+		const { id: targetId } = await h.add("base", "content A");
+		await h.write({
+			operation: "supersede",
+			targetId,
+			targetRevision: 1,
+			summary: "corrected",
+			content: "content B",
+		});
+		const storePath = getMemoryStorePath(cwd);
+		const before = await readFile(storePath);
+
+		await expect(
+			h.write({
+				operation: "supersede",
+				targetId,
+				targetRevision: 1,
+				summary: "again",
+				content: "content C",
+			}),
+		).rejects.toMatchObject({ code: MEMORY_TARGET_INACTIVE });
+		await expect(readFile(storePath)).resolves.toEqual(before);
+	});
+
+	it("rejects a replacement whose derived identity already exists under another record", async () => {
+		const cwd = await tempCwd();
+		const h = new MemoryHarness(cwd);
+		await h.input("interactive");
+		const { id: targetId } = await h.add("A", "alpha content");
+		await h.add("B", "beta content");
+		const storePath = getMemoryStorePath(cwd);
+		const markerPath = join(getMemoryStoreDirectory(cwd), MEMORY_STORE_IGNORE_FILE_NAME);
+		await rm(markerPath);
+		const before = await readFile(storePath);
+
+		// The normalized replacement equals the sibling record's text, so its
+		// derived identity would collide; the mutation is rejected as ambiguous.
+		await expect(
+			h.write({
+				operation: "supersede",
+				targetId,
+				targetRevision: 1,
+				summary: "B",
+				content: "beta content",
+			}),
+		).rejects.toMatchObject({ code: MEMORY_IDENTITY_COLLISION });
+		await expect(readFile(storePath)).resolves.toEqual(before);
+		await expect(readFile(markerPath)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("rejects add that carries target fields through semantic validation", async () => {
+		const cwd = await tempCwd();
+		const h = new MemoryHarness(cwd);
+		await h.input("interactive");
+
+		await expect(
+			h.write({
+				operation: "add",
+				summary: "s",
+				content: "c",
+				targetId: "memory-000000000000000000000000",
+			}),
+		).rejects.toMatchObject({ code: MEMORY_INPUT_REJECTED });
+		await expect(
+			h.write({
+				operation: "add",
+				summary: "s",
+				content: "c",
+				targetRevision: 1,
+			}),
+		).rejects.toMatchObject({ code: MEMORY_INPUT_REJECTED });
+		await expect(readdir(cwd)).resolves.toEqual([]);
+	});
+
+	it("requires both target fields for supersede through semantic validation", async () => {
+		const cwd = await tempCwd();
+		const h = new MemoryHarness(cwd);
+		await h.input("interactive");
+		await h.add("s", "content");
+		const storePath = getMemoryStorePath(cwd);
+		const before = await readFile(storePath);
+
+		await expect(h.write({ operation: "supersede", targetId: "x", summary: "s", content: "c" })).rejects.toMatchObject({
+			code: MEMORY_INPUT_REJECTED,
+		});
+		await expect(
+			h.write({ operation: "supersede", targetRevision: 1, summary: "s", content: "c" }),
+		).rejects.toMatchObject({ code: MEMORY_INPUT_REJECTED });
+		await expect(readFile(storePath)).resolves.toEqual(before);
+	});
+
+	it("applies capture policy to replacement content and summary", async () => {
+		const cwd = await tempCwd();
+		const h = new MemoryHarness(cwd);
+		await h.input("interactive");
+		const { id: targetId } = await h.add("s", "content");
+		const storePath = getMemoryStorePath(cwd);
+		const before = await readFile(storePath);
+
+		await expect(
+			h.write({
+				operation: "supersede",
+				targetId,
+				targetRevision: 1,
+				summary: "s",
+				content: "use key sk-abcDEF1234ghIJK5678xyz123456789",
+			}),
+		).rejects.toMatchObject({ code: MEMORY_INPUT_REJECTED });
+		await expect(
+			h.write({
+				operation: "supersede",
+				targetId,
+				targetRevision: 1,
+				summary: "   ",
+				content: "replacement",
+			}),
+		).rejects.toMatchObject({ code: MEMORY_INPUT_REJECTED });
+		await expect(readFile(storePath)).resolves.toEqual(before);
+	});
+
+	it("fails closed on targets when no Store exists yet", async () => {
+		const cwd = await tempCwd();
+		const h = new MemoryHarness(cwd);
+		await h.input("interactive");
+
+		await expect(
+			h.write({
+				operation: "supersede",
+				targetId: "memory-000000000000000000000000",
+				targetRevision: 1,
+				summary: "s",
+				content: "c",
+			}),
+		).rejects.toMatchObject({ code: MEMORY_TARGET_NOT_FOUND });
+		await expect(readdir(cwd)).resolves.toEqual([]);
+	});
+
+	it("serializes concurrent supersedes of one target so only one commits", async () => {
+		const cwd = await tempCwd();
+		const h = new MemoryHarness(cwd);
+		await h.input("interactive");
+		const { id: targetId, revision: targetRevision } = await h.add("base", "content A");
+		const tool = h.writeTool();
+
+		const first = tool.execute(
+			"a",
+			{ operation: "supersede", targetId, targetRevision, summary: "alpha", content: "content B" } as never,
+			undefined,
+			undefined,
+			h.host.context,
+		);
+		const second = tool.execute(
+			"b",
+			{ operation: "supersede", targetId, targetRevision, summary: "beta", content: "content C" } as never,
+			undefined,
+			undefined,
+			h.host.context,
+		);
+		const [ra, rb] = await Promise.allSettled([first, second]);
+
+		const fulfilled = ra.status === "fulfilled" ? ra.value : rb.status === "fulfilled" ? rb.value : undefined;
+		const rejected = ra.status === "rejected" ? ra.reason : rb.status === "rejected" ? rb.reason : undefined;
+		expect(fulfilled).toBeDefined();
+		expect(rejected).toBeDefined();
+		if (fulfilled !== undefined) expect(asRecord(asRecord(fulfilled).details).outcome).toBe("superseded");
+		if (rejected !== undefined) {
+			if (!(rejected instanceof MemoryError)) throw rejected;
+			expect(rejected.code).toBe(MEMORY_TARGET_INACTIVE);
+		}
+
+		const persisted = await storeJson(cwd);
+		expect(persisted.revision).toBe(2);
+		expect(persisted.records).toHaveLength(2);
+		const active = persisted.records.filter((record) => asRecord(record).state === "active");
+		expect(active).toHaveLength(1);
+	});
+
+	it("keeps the prior Store bytes authoritative when a supersession commit fails at the loaded seam", async () => {
+		const cwd = await tempCwd();
+		const first = new MemoryHarness(cwd);
+		await first.input("interactive");
+		const { id: targetId } = await first.add("base", "content A");
+		const before = await readFile(getMemoryStorePath(cwd));
+
+		const realFs = createMemoryStoreFs();
+		const failingFs: MemoryStoreFs = {
+			...realFs,
+			rename: async () => {
+				throw Object.assign(new Error("injected rename failure"), { code: "EACCES" });
+			},
+		};
+		const failing = new MemoryHarness(cwd, DEFAULT_CONFIG, { storeFs: failingFs });
+		await failing.input("interactive");
+
+		await expect(
+			failing.write({
+				operation: "supersede",
+				targetId,
+				targetRevision: 1,
+				summary: "corrected",
+				content: "content B",
+			}),
+		).rejects.toMatchObject({ code: "MEMORY_WRITE_FAILED" });
+		await expect(readFile(getMemoryStorePath(cwd))).resolves.toEqual(before);
+		await expect(readdir(getMemoryStoreDirectory(cwd)).then((entries) => entries.sort())).resolves.toEqual([
+			MEMORY_STORE_IGNORE_FILE_NAME,
+			"store.json",
+		]);
+	});
+
+	it("aborts a supersession before any byte change on a pre-aborted signal", async () => {
+		const cwd = await tempCwd();
+		const h = new MemoryHarness(cwd);
+		await h.input("interactive");
+		const { id: targetId } = await h.add("base", "content A");
+		const before = await readFile(getMemoryStorePath(cwd));
+
+		await expect(
+			h
+				.writeTool()
+				.execute(
+					"call-1",
+					{ operation: "supersede", targetId, targetRevision: 1, summary: "s", content: "c" } as never,
+					AbortSignal.abort(),
+					undefined,
+					h.host.context,
+				),
+		).rejects.toMatchObject({ code: MEMORY_ABORTED });
+		await expect(readFile(getMemoryStorePath(cwd))).resolves.toEqual(before);
+	});
+
+	it("lets exact reads inspect the active leaf and an explicitly addressed superseded revision", async () => {
+		const cwd = await tempCwd();
+		const h = new MemoryHarness(cwd);
+		await h.input("interactive");
+		const { id: targetId } = await h.add("npm workspaces", "The monorepo uses npm workspaces; never mix pnpm.");
+		const supersededResult = await h.write({
+			operation: "supersede",
+			targetId,
+			targetRevision: 1,
+			summary: "npm workspaces (corrected)",
+			content: "The monorepo uses npm workspaces; pnpm is allowed in strict mode.",
+		});
+		const leafId = String(asRecord(asRecord(supersededResult.details).record).id);
+
+		// Exact read of the superseded revision preserves its historical state and content.
+		const historical = await h.read(targetId, 1);
+		const historicalDetails = asRecord(historical.details);
+		expect(asRecord(historicalDetails.record).state).toBe("superseded");
+		expect(asRecord(historicalDetails.record).revision).toBe(1);
+		expect(asRecord(historicalDetails.record).content).toBe("The monorepo uses npm workspaces; never mix pnpm.");
+
+		// The active leaf carries its relationship metadata.
+		const leaf = await h.read(leafId);
+		const leafDetails = asRecord(leaf.details);
+		expect(asRecord(leafDetails.record).state).toBe("active");
+		expect(asRecord(leafDetails.record).revision).toBe(2);
+		expect(asRecord(leafDetails.record).supersedes).toEqual({ id: targetId, revision: 1 });
 	});
 });

@@ -1,9 +1,10 @@
 # memory
 
 为精确的 Working Directory 保存并动态召回本地长期记忆（Directory Memory）。本 extension 正处于分阶段实现中：
-本版本（#7）打通第一条完整写入/读取路径——在前台直接人类轮次中，primary Agent 通过 `memory_write`（add）提交
-一条经过验证的 Memory Record，收到含完整内容的 Memory Write Receipt，并可在新 session 中通过 `memory_read`
-或 `memory-read` 命令精确读取。搜索、supersede、自动召回与遗忘由后续 issue 提供，README 中标记为「尚未实现」。
+#7 + #8 打通完整的写入/读取路径——在前台直接人类轮次中，primary Agent 通过 `memory_write`（`add` 或
+`supersede`）提交一条经过验证的 Memory Record，收到含完整内容的 Memory Write Receipt，并可在新 session 中通过
+`memory_read` 或 `memory-read` 命令精确读取（含显式指定 superseded revision）。搜索、自动召回与遗忘由后续
+issue 提供，README 中标记为「尚未实现」。
 
 ## 状态
 
@@ -28,13 +29,24 @@ Store 格式、配置字段和命令输出仍可能调整。README 的完整版�
 - **记录身份与幂等**：记录 id 由规范化后的 content+summary 的 SHA-256 确定性派生（`memory-<hex>`）。
   完全相同（规范化后）的 content+summary 再次写入返回 no-op 收据，Store revision 与文件字节均不变；
   任一字段不同则新增记录。不同规范形态（CRLF/LF、分解/预组合 Unicode）被归一化后视为相同。
+- **Auditable supersede（#8）**：`memory_write` 的 `operation: "supersede"` 在同一个 add 事务管线内执行，
+  不新增独立写入路径。请求必须携带精确的 `targetId` 与 `targetRevision`（当前 active 记录的 id 与 revision）
+  以及完整替代 content 与可检索 summary。成功时仅在追加处新增一个不可变 revision（`revision = target.revision + 1`、
+  `supersedes: {id, revision}`、完整 provenance），并把目标记录的 `state` 改为 `superseded` 而不改动其历史
+  content/provenance；Store revision 只递增一次，链的 leaf 保持 `active`。目标缺失（`MEMORY_TARGET_NOT_FOUND`）、
+  目标 revision 陈旧（`MEMORY_TARGET_STALE`）、目标已被 supersede（`MEMORY_TARGET_INACTIVE`）以及替代
+  content+summary 派生的记录身份与其他记录冲突（`MEMORY_IDENTITY_COLLISION`）都在任何文件写入前被事务性拒绝，
+  绝不产生字节变更；add 携带 target 字段、supersede 缺少任一 target 字段则报 `MEMORY_INPUT_REJECTED`。与目标
+  规范化后完全相同的替代按既有幂等策略返回 no-op。并发对同一目标的 supersede 由 `withFileMutationQueue` 串行化，
+  只有一个能提交，另一个收到 inactive 错误，Store 保持一致。
 - **输入规范与捕获策略**：写入前对 summary/content 做确定性归一化（CRLF/CR → LF，NFC 组合），并拒绝
   空内容、超长内容、控制字符（保留 tab 与换行）以及保守检测的 secret-like 内容（私钥、`sk-`/`AKIA`/`ghp_`/
   `xoxb-`/Bearer 和 password/api-key 赋值等常见凭据形态）。策略拒绝不会产生任何 Store 变更。
 - **写入权限**：`memory_write` 只在前台直接人类轮次可用——`input` 事件 source 为 `interactive` 或 `rpc`
   时授权；extension source input、extension custom follow-up，以及 `agent_settled`、`session_start`、
   `session_tree`、`session_shutdown` 都会 fail-closed 复位。
-  session 分支上持久存在 `subagent:descriptor`（sub-agent extension 写入）时拒绝写入但读取保持可用；
+  session 分支上持久存在 `subagent:descriptor`（sub-agent extension 写入）时拒绝写入但读取保持可用；该字符串是
+  两个源码隔离 extension 之间的持久 session protocol，未形成安装依赖，任一侧改名时必须同步更新并回归测试；
   `proactiveWrites: false` 配置直接拒绝写入。`memory_read` 与 `memory-read` 命令不做权限检查，任何
   来源（含 subagent）都可读取。
 - **事务与原子提交**：每次写入都是一个完整的「读取—校验—变更—原子写回」事务，整体包在 Pi 的
@@ -46,17 +58,16 @@ Store 格式、配置字段和命令输出仍可能调整。README 的完整版�
   的目录元数据更新为当前规范 Directory Identity，无需全局迁移注册表。
 - **不可变记录与收据**：每条记录携带不可变 provenance——来源 session、可用的当前 leaf entry、规范
   Directory Identity，author 固定为 `primary-agent`。每次 `memory_write` 返回含完整持久化内容、记录身份、
-  来源与 outcome（added / no-op）的收据（`memory:write-receipt`）；`memory_read` 返回结构化结果
+  来源与 outcome（added / no-op / superseded，superseded 一并携带新记录与替换掉的旧记录）的收据
+  （`memory:write-receipt`）；`memory_read` 返回结构化结果
   （`memory:read-result`）。工具结果同时提供紧凑/展开两种 TUI 渲染，RPC/JSON/print 模式不等待 UI。
 - **无信任门槛（维护者决定）**：本版本不要求 Pi project trust，也不引入第二套信任系统；由 #4 规格提出的
   真实性风险将在 #13 的正式文档中说明。
 
 ## 尚未实现
 
-- `memory_write` 的 `supersede` 操作（当前 schema 只允许 `add`）。
 - `memory_search`、自动召回（before-agent-start 注入）与可见指纹去重。
 - `memory_forget`（物理遗忘）与相关收据。
-- superseded 记录的显式精确读取（schema 已预留 `revision` 参数，当前所有记录都是 root/active）。
 
 ## 安装、启用与卸载
 
@@ -132,7 +143,7 @@ vendor；`@earendil-works/pi-ai`、`@earendil-works/pi-tui`、`typebox` 与 `@ea
 
 当前注册：
 
-- LLM 工具 `memory_write`（add；仅 primary 前台 Agent）、`memory_read`（精确读取，无权限限制）。
+- LLM 工具 `memory_write`（add / supersede；仅 primary 前台 Agent）、`memory_read`（精确读取，无权限限制）。
 - 用户命令 `memory-status`（只读诊断）、`memory-read <record-id> [<revision>]`（精确读取的便捷命令，
   复用同一 Store 读取逻辑，无独立语义）。
 - 无 UI widget、无 custom entry、无消息渲染器；工具结果的紧凑/展开渲染随工具注册。
@@ -164,6 +175,19 @@ The monorepo is managed with npm workspaces; never mix pnpm or Yarn.
 完全相同的记忆再次写入时收据头部为 `memory_write · no-op (identical memory is already present; Store unchanged)`，
 Store revision 与文件字节不变。
 
+修正一条过时的记忆（supersede）：
+
+```text
+memory_write(operation="supersede", targetId="memory-<hex>", targetRevision=1,
+             summary="npm workspaces (corrected)",
+             content="The monorepo uses npm workspaces; pnpm is allowed in strict mode.")
+```
+
+成功收据为 `memory_write · superseded (Store revision 1 → 2)`，结构化 details 含 `outcome: "superseded"`、新记录
+`record` 与替换掉的 `replaced`（目标 revision，`state: "superseded"`）；模型可见文本同时展示新记录与「Replaced record」
+两段完整 content、身份与关系元数据，不隐藏任何一方的持久化内容。与目标规范化后完全相同的替代返回 no-op 收据
+（`... identical correction ...`），Store 不变。
+
 读取：
 
 ```text
@@ -178,7 +202,7 @@ memory_read(id="memory-<hex>")
 
 ## 限制
 
-- 本版本无 supersede、搜索、自动召回与遗忘；`memory_write` 只接受 `operation: "add"`。
+- 本版本无搜索、自动召回与遗忘；`memory_write` 支持 `operation: "add"` 与 `"supersede"`。
 - 目录身份是精确匹配：父、子、兄弟目录不共享记忆，无继承、无仓库根发现、无跨目录 Store。
 - v1 不验证 Store 的来源真实性；目录移动或复制后，下一次成功写入会采用当前规范 Directory Identity。
 - 不读取、索引、总结或改写 Pi 的 Global User Instructions。

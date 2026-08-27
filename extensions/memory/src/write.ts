@@ -14,9 +14,11 @@ export interface MemoryToolRuntime {
 
 const MEMORY_WRITE_PARAMETERS = Type.Object(
 	{
-		operation: StringEnum(["add"] as const),
+		operation: StringEnum(["add", "supersede"] as const),
 		summary: Type.String({ minLength: 1 }),
 		content: Type.String({ minLength: 1 }),
+		targetId: Type.Optional(Type.String({ minLength: 1 })),
+		targetRevision: Type.Optional(Type.Integer({ minimum: 1 })),
 	},
 	{ additionalProperties: false },
 );
@@ -26,14 +28,14 @@ export function registerMemoryWriteTool(pi: { registerTool(tool: unknown): void 
 	const guidelines = [
 		"Use memory_write only for verified, durable, directory-specific knowledge that would be hard to rediscover.",
 		"Never use memory_write for global preferences, secrets, credentials, raw logs, large outputs, temporary paths, unresolved failures, Plans, Todos, session summaries, or content already authoritative in project documentation.",
-		"Set memory_write.operation to add; supersede is not available yet.",
+		"Set memory_write.operation to add for new verified knowledge. To correct an existing memory, use operation supersede with the exact targetId and targetRevision of the still-active record plus the complete replacement content and searchable summary; supersede never edits history in place.",
 	];
 	pi.registerTool(
 		defineTool({
 			name: MEMORY_WRITE_TOOL,
 			label: "Write memory",
 			description:
-				"Commit one verified Memory Record for the current Working Directory during a direct foreground human turn, then return a full-content receipt with immutable provenance.",
+				"Commit one verified Memory Record for the current Working Directory during a direct foreground human turn, then return a full-content receipt with immutable provenance. operation add stores new knowledge; operation supersede corrects an exact active record by targetId and targetRevision, appending an auditable immutable successor and leaving the prior revision preserved for historical inspection.",
 			parameters: MEMORY_WRITE_PARAMETERS,
 			promptGuidelines: guidelines,
 			async execute(_toolCallId, parameters, signal, _onUpdate, context) {
@@ -42,8 +44,8 @@ export function registerMemoryWriteTool(pi: { registerTool(tool: unknown): void 
 				if (status.kind === "denied") {
 					throw new MemoryError(MEMORY_WRITE_DENIED, denyMessage(status.reason));
 				}
-				const outcome = await service.add(context, parameters, signal);
-				const receipt = makeWriteReceipt(outcome);
+				const outcome = await service.write(context, parameters, signal);
+				const receipt = makeWriteReceipt(outcome, parameters.operation);
 				return {
 					content: [{ type: "text", text: renderWriteReceiptText(receipt) }],
 					details: receipt,
@@ -51,8 +53,9 @@ export function registerMemoryWriteTool(pi: { registerTool(tool: unknown): void 
 			},
 			renderCall(args, theme: Theme) {
 				const summary = args.summary.trim();
+				const modifier = args.operation === "supersede" ? ` ${theme.fg("muted", "· supersede")}` : "";
 				return compactLines([
-					`${theme.fg("toolTitle", theme.bold(MEMORY_WRITE_TOOL))}${summary.length === 0 ? "" : ` ${theme.fg("muted", `· ${summary}`)}`}`,
+					`${theme.fg("toolTitle", theme.bold(MEMORY_WRITE_TOOL))}${summary.length === 0 ? "" : ` ${theme.fg("muted", `· ${summary}`)}`}${modifier}`,
 				]);
 			},
 			renderResult(result, { expanded }, theme, context) {

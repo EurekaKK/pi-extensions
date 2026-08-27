@@ -76,6 +76,18 @@ export const MEMORY_INPUT_REJECTED = "MEMORY_INPUT_REJECTED";
 /** An exact record was not found by the read path. */
 export const MEMORY_RECORD_NOT_FOUND = "MEMORY_RECORD_NOT_FOUND";
 
+/** A supersede target record identity was not found. */
+export const MEMORY_TARGET_NOT_FOUND = "MEMORY_TARGET_NOT_FOUND";
+
+/** A supersede target id exists but the requested revision is not its current revision. */
+export const MEMORY_TARGET_STALE = "MEMORY_TARGET_STALE";
+
+/** A supersede target is no longer active (already superseded). */
+export const MEMORY_TARGET_INACTIVE = "MEMORY_TARGET_INACTIVE";
+
+/** A supersede replacement's derived identity already exists under a different record. */
+export const MEMORY_IDENTITY_COLLISION = "MEMORY_IDENTITY_COLLISION";
+
 /** The Store directory could not be prepared for first-use initialization. */
 export const MEMORY_STORE_INIT_FAILED = "MEMORY_STORE_INIT_FAILED";
 

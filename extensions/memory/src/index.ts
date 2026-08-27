@@ -35,10 +35,11 @@ function notify(context: ExtensionContext, message: string, type: "info" | "warn
 }
 
 /**
- * Register the full #7 surface: foreground `memory_write` (add), exact
- * `memory_read` plus the `memory-read` command, and the read-only diagnostics
- * command. All three share one Store service bounded by the SAME
- * withFileMutationQueue transaction; concurrent writes therefore serialize.
+ * Register the full #7 + #8 surface: foreground `memory_write` (add and
+ * auditable supersede), exact `memory_read` plus the `memory-read` command,
+ * and the read-only diagnostics command. All share one Store service bounded
+ * by the SAME withFileMutationQueue transaction; concurrent writes therefore
+ * serialize and a supersede against one target commits exactly once.
  */
 export function registerMemoryExtension(
 	pi: ExtensionAPI,

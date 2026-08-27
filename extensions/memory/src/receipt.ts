@@ -7,26 +7,44 @@ import type { MemoryRecordV1 } from "./store.js";
 export interface MemoryWriteReceiptV1 {
 	readonly kind: "memory:write-receipt";
 	readonly version: 1;
-	readonly outcome: "added" | "no-op";
+	readonly operation: "add" | "supersede";
+	readonly outcome: "added" | "no-op" | "superseded";
 	readonly record: MemoryRecordV1;
+	/** The exact superseded target; present only for a committed supersession. */
+	readonly replaced?: MemoryRecordV1;
 	readonly storeRevision: number;
 	readonly previousStoreRevision?: number;
 	readonly ignoreMarker?: "created" | "preserved";
 }
 
-export function makeWriteReceipt(outcome: MemoryWriteOutcome): MemoryWriteReceiptV1 {
+export function makeWriteReceipt(outcome: MemoryWriteOutcome, operation: "add" | "supersede"): MemoryWriteReceiptV1 {
 	if (outcome.kind === "no-op") {
 		return {
 			kind: "memory:write-receipt",
 			version: 1,
+			operation,
 			outcome: "no-op",
 			record: outcome.record,
 			storeRevision: outcome.storeRevision,
 		};
 	}
+	if (outcome.kind === "superseded") {
+		return {
+			kind: "memory:write-receipt",
+			version: 1,
+			operation,
+			outcome: "superseded",
+			record: outcome.record,
+			replaced: outcome.replaced,
+			storeRevision: outcome.storeRevision,
+			previousStoreRevision: outcome.previousStoreRevision,
+			...(outcome.ignoreMarker === null ? {} : { ignoreMarker: outcome.ignoreMarker }),
+		};
+	}
 	return {
 		kind: "memory:write-receipt",
 		version: 1,
+		operation,
 		outcome: "added",
 		record: outcome.record,
 		storeRevision: outcome.storeRevision,
@@ -58,13 +76,42 @@ function recordHeader(record: MemoryRecordV1): string {
 	].join("\n");
 }
 
-/** Full-content receipt text returned to the model on every write (add or no-op). */
+/** Full-content receipt text returned to the model on every write (add, no-op, or supersede). */
 export function renderWriteReceiptText(receipt: MemoryWriteReceiptV1): string {
 	const record = receipt.record;
-	const prefix =
-		receipt.outcome === "no-op"
-			? "memory_write · no-op (identical memory is already present; Store unchanged)"
-			: `memory_write · added (Store revision ${receipt.previousStoreRevision ?? "new"} → ${receipt.storeRevision})`;
+	if (receipt.outcome === "no-op") {
+		const prefix =
+			receipt.operation === "supersede"
+				? "memory_write · no-op (identical correction: the replacement matches the target record; Store unchanged)"
+				: "memory_write · no-op (identical memory is already present; Store unchanged)";
+		return [prefix, "", recordHeader(record), "", `Summary: ${record.summary}`, `Content:\n${record.content}`].join(
+			"\n",
+		);
+	}
+	if (receipt.outcome === "superseded") {
+		const replaced = receipt.replaced;
+		if (replaced === undefined) {
+			// Defensive: a committed supersession always carries its replaced record.
+			return "memory_write · superseded (replaced record details unavailable)";
+		}
+		return [
+			`memory_write · superseded (Store revision ${receipt.previousStoreRevision ?? "new"} → ${receipt.storeRevision})`,
+			"",
+			recordHeader(record),
+			`Supersedes: ${record.supersedes?.id ?? "?"} revision ${record.supersedes?.revision ?? "?"}`,
+			"",
+			`Summary: ${record.summary}`,
+			`Content:\n${record.content}`,
+			"",
+			"Replaced record (superseded; preserved for historical inspection):",
+			"",
+			recordHeader(replaced),
+			"",
+			`Summary: ${replaced.summary}`,
+			`Content:\n${replaced.content}`,
+		].join("\n");
+	}
+	const prefix = `memory_write · added (Store revision ${receipt.previousStoreRevision ?? "new"} → ${receipt.storeRevision})`;
 	return [prefix, "", recordHeader(record), "", `Summary: ${record.summary}`, `Content:\n${record.content}`].join("\n");
 }
 

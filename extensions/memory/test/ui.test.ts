@@ -119,3 +119,70 @@ describe("memory compact/expanded TUI renderers", () => {
 		expect(collapsed.join("\n")).toContain("memory_read");
 	});
 });
+
+describe("memory_write supersede receipt TUI bound", () => {
+	it("keeps compact results bounded while expanded results show both replaced and replacement content", async () => {
+		const host = new FakePiHost({ cwd: await tempCwd(), mode: "tui", hasUI: true });
+		registerMemoryExtension(host.api, DEFAULT_CONFIG);
+		await host.emit("input", { type: "input", source: "interactive", text: "remember" });
+
+		const write = toolAt(host, MEMORY_WRITE_TOOL);
+		const added = await write.execute(
+			"write-1",
+			{ operation: "add", summary: "npm workspaces", content: CONTENT } as never,
+			undefined,
+			undefined,
+			host.context,
+		);
+		const targetId = String((added.details as { record: { id: string } }).record.id);
+
+		const result = await write.execute(
+			"write-2",
+			{
+				operation: "supersede",
+				targetId,
+				targetRevision: 1,
+				summary: "npm workspaces (corrected)",
+				content: "CORRECTED monorepo guidance; this second sentence exists to exceed compact width safely.",
+			} as never,
+			undefined,
+			undefined,
+			host.context,
+		);
+
+		const details = result.details as { outcome: string; record: { id: string }; replaced: { id: string } };
+		expect(details.outcome).toBe("superseded");
+		expect(details.replaced.id).toBe(targetId);
+
+		const expanded = write
+			.renderResult(result, { expanded: true, isPartial: false }, theme, { isError: false })
+			.render(200);
+		const expandedText = expanded.join("\n");
+		expect(expandedText).toContain(CONTENT);
+		expect(expandedText).toContain(
+			"CORRECTED monorepo guidance; this second sentence exists to exceed compact width safely.",
+		);
+		expect(expandedText).toContain("Replaced record");
+		expect(expandedText).toContain(details.record.id);
+		expect(expandedText).toContain(targetId);
+
+		const collapsed = write
+			.renderResult(result, { expanded: false, isPartial: false }, theme, { isError: false })
+			.render(40);
+		expect(collapsed.length).toBeLessThanOrEqual(4);
+		const collapsedText = collapsed.join("\n");
+		expect(collapsedText).toContain("memory_write");
+		expect(collapsedText).not.toContain("exceed compact width safely");
+
+		// The compact call line stays a single highlighted line.
+		const callLines = write
+			.renderCall(
+				{ operation: "supersede", targetId, targetRevision: 1, summary: "npm workspaces (corrected)" },
+				theme,
+				host.context,
+			)
+			.render(120);
+		expect(callLines.length).toBeLessThanOrEqual(2);
+		expect(callLines.join("\n")).toContain("memory_write");
+	});
+});

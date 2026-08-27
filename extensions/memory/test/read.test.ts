@@ -129,6 +129,81 @@ describe("memory_read tool at the loaded seam", () => {
 		await expect(readFile(getMemoryStorePath(cwd), "utf8")).resolves.toBe("{not json");
 	});
 
+	it("reads an explicitly addressed superseded revision with its state and relationship metadata", async () => {
+		const cwd = await tempCwd();
+		const dir = dirname(getMemoryStorePath(cwd));
+		await mkdir(dir, { recursive: true });
+		await writeFile(
+			getMemoryStorePath(cwd),
+			JSON.stringify(
+				{
+					version: 1,
+					schema: "memory.store.v1",
+					revision: 2,
+					directory: { id: cwd },
+					records: [
+						{
+							id: "rec-old",
+							revision: 1,
+							state: "superseded",
+							summary: "npm workspaces",
+							content: "The monorepo uses npm workspaces; never mix pnpm.",
+							supersedes: null,
+							provenance: {
+								author: "primary-agent",
+								directoryId: cwd,
+								sessionId: "session-1",
+							},
+							createdAt: "2025-01-01T00:00:00.000Z",
+							updatedAt: "2025-01-01T00:00:00.000Z",
+						},
+						{
+							id: "rec-new",
+							revision: 2,
+							state: "active",
+							summary: "npm workspaces (corrected)",
+							content: "The monorepo uses npm workspaces; pnpm is allowed in strict mode.",
+							supersedes: { id: "rec-old", revision: 1 },
+							provenance: {
+								author: "primary-agent",
+								directoryId: cwd,
+								sessionId: "session-2",
+							},
+							createdAt: "2025-01-02T00:00:00.000Z",
+							updatedAt: "2025-01-02T00:00:00.000Z",
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf8",
+		);
+		const h = new MemoryHarness(cwd);
+
+		// Active leaf read without a revision.
+		const active = await h.read("rec-new");
+		const activeDetails = asRecord(active.details);
+		expect(asRecord(activeDetails.record).state).toBe("active");
+		expect(asRecord(activeDetails.record).supersedes).toEqual({ id: "rec-old", revision: 1 });
+
+		// Superseded revision read by exact id + revision.
+		const tool = h.host.tools.find((candidate) => candidate.name === MEMORY_READ_TOOL);
+		if (tool === undefined) throw new Error("missing read tool");
+		const historical = await tool.execute(
+			"call-rs",
+			{ id: "rec-old", revision: 1 } as never,
+			undefined,
+			undefined,
+			h.host.context,
+		);
+		const historicalDetails = asRecord((historical as ReadResult).details);
+		expect(asRecord(historicalDetails.record).state).toBe("superseded");
+		expect(asRecord(historicalDetails.record).revision).toBe(1);
+		expect(asRecord(historicalDetails.record).supersedes).toBeNull();
+		expect(asRecord(historicalDetails.record).content).toBe("The monorepo uses npm workspaces; never mix pnpm.");
+	});
+
 	it("stays readable in a subagent context without write authority checks", async () => {
 		const cwd = await tempCwd();
 		const h = new MemoryHarness(cwd);
