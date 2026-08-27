@@ -127,6 +127,12 @@ describe("memory deployment config", () => {
 			"recall.maxChars must be a positive safe integer",
 		);
 
+		const unsafeRecallEnvelope = { ...DEFAULT_CONFIG, recall: { ...DEFAULT_CONFIG.recall, maxChars: 511 } };
+		await writeFile(join(agentDir, "memory", "config.json"), JSON.stringify(unsafeRecallEnvelope), "utf8");
+		await expect(initializeMemoryConfig({ agentDir, withFileMutationQueue: queue() })).rejects.toThrow(
+			"recall.maxChars must be at least 512",
+		);
+
 		const zeroTimeout = { ...DEFAULT_CONFIG, git: { diagnosticTimeoutMs: 0 } };
 		await writeFile(join(agentDir, "memory", "config.json"), JSON.stringify(zeroTimeout), "utf8");
 		await expect(initializeMemoryConfig({ agentDir, withFileMutationQueue: queue() })).rejects.toThrow(

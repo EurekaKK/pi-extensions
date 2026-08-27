@@ -31,6 +31,8 @@ export interface MemoryGitConfigV1 {
 	readonly diagnosticTimeoutMs: number;
 }
 
+export const MIN_RECALL_CHARS = 512;
+
 export interface MemoryConfigV1 {
 	readonly version: 1;
 	readonly schema: "memory.config.v1";
@@ -112,6 +114,9 @@ function validateRecallConfig(value: unknown, configPath: string): MemoryRecallC
 	}
 	assertPositiveSafeInteger(configPath, "recall.maxRecords", value.maxRecords);
 	assertPositiveSafeInteger(configPath, "recall.maxChars", value.maxChars);
+	if (value.maxChars < MIN_RECALL_CHARS) {
+		fail(configPath, `recall.maxChars must be at least ${MIN_RECALL_CHARS}`);
+	}
 	return Object.freeze({ maxRecords: value.maxRecords, maxChars: value.maxChars });
 }
 

@@ -66,6 +66,17 @@ export const MEMORY_STORE_SCHEMA = "memory.store.v1";
  */
 export const MEMORY_PRIMARY_AGENT_AUTHOR = "primary-agent";
 
+/**
+ * Stable custom-message type for automatic Memory Recall injected before a
+ * direct human Agent run. The `memory:` prefix keeps it collision-free; the
+ * structured `details` carry the v1 Recall Receipt so context deduplication
+ * and rendering never parse display text. The primary `MemoryWriteAuthority`
+ * whitelists this exact type so a recall in a direct human run does not revoke
+ * legitimate foreground write authority, while other extensions' custom
+ * follow-up messages still do.
+ */
+export const MEMORY_RECALL_CUSTOM_TYPE = "memory:recall-receipt";
+
 /** Stable error-code vocabulary shared by the diagnostics, write, and read slices. */
 export const MEMORY_DIRECTORY_IDENTITY_FAILED = "MEMORY_DIRECTORY_IDENTITY_FAILED";
 export const MEMORY_STORE_CORRUPT = "MEMORY_STORE_CORRUPT";

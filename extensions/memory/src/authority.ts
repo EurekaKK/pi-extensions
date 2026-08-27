@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { MemoryConfigV1 } from "./config.js";
-import { SUBAGENT_DESCRIPTOR_TYPE } from "./constants.js";
+import { MEMORY_RECALL_CUSTOM_TYPE, SUBAGENT_DESCRIPTOR_TYPE } from "./constants.js";
 
 export type MemoryWriteDenialReason = "no-direct-human-turn" | "subagent-context" | "proactive-writes-disabled";
 
@@ -42,11 +42,17 @@ export class MemoryWriteAuthority {
 	readonly #pi: ExtensionAPI;
 	readonly #config: MemoryConfigV1;
 	#directHumanTurn = false;
+	#expectedRecallContent: string | undefined;
 
 	constructor(pi: ExtensionAPI, config: MemoryConfigV1) {
 		this.#pi = pi;
 		this.#config = config;
 		this.#subscribe();
+	}
+
+	/** Admit exactly one Recall message prepared by this extension for the current human run. */
+	expectRecallMessage(content: string): void {
+		this.#expectedRecallContent = content;
 	}
 
 	check(context: ExtensionContext): MemoryWriteAuthorityResult {
@@ -58,14 +64,29 @@ export class MemoryWriteAuthority {
 
 	#reset(): void {
 		this.#directHumanTurn = false;
+		this.#expectedRecallContent = undefined;
 	}
 
 	#subscribe(): void {
 		this.#pi.on("input", (event) => {
 			this.#directHumanTurn = event.source === "interactive" || event.source === "rpc";
+			this.#expectedRecallContent = undefined;
 		});
 		this.#pi.on("message_start", (event) => {
-			if (event.message.role === "custom") this.#reset();
+			if (event.message.role !== "custom") return;
+			const expected = this.#expectedRecallContent;
+			this.#expectedRecallContent = undefined;
+			// Automatic Recall injects one custom message inside the direct human run
+			// that granted authority. Preserve authority only for the exact content
+			// this extension just prepared; lookalike or replayed custom messages reset.
+			if (
+				event.message.customType === MEMORY_RECALL_CUSTOM_TYPE &&
+				typeof event.message.content === "string" &&
+				event.message.content === expected
+			) {
+				return;
+			}
+			this.#reset();
 		});
 		this.#pi.on("agent_settled", () => this.#reset());
 		this.#pi.on("session_start", () => this.#reset());

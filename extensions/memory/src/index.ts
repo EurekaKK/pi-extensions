@@ -8,6 +8,7 @@ import { MemoryWriteAuthority } from "./authority.js";
 import { type FileMutationQueue, initializeMemoryConfig, type MemoryConfigV1 } from "./config.js";
 import { MEMORY_STATUS_COMMAND } from "./constants.js";
 import { registerMemoryReadCommand, registerMemoryReadTool } from "./read.js";
+import { MemoryRecall, registerRecallMessageRenderer } from "./recall.js";
 import { registerMemoryListCommand, registerMemorySearchCommand, registerMemorySearchTool } from "./search.js";
 import { MemoryService } from "./service.js";
 import { buildMemoryStatusReport, renderMemoryStatusFailure } from "./status.js";
@@ -36,13 +37,15 @@ function notify(context: ExtensionContext, message: string, type: "info" | "warn
 }
 
 /**
- * Register the #7 + #8 + #9 surface: foreground `memory_write` (add and
+ * Register the #7 + #8 + #9 + #10 surface: foreground `memory_write` (add and
  * auditable supersede), exact `memory_read` plus the `memory-read` command,
  * bounded ranked `memory_search` plus the `memory-search` and `memory-list`
- * commands, and the read-only diagnostics command. All Store behavior shares
- * ONE validated Store service; every write is bounded by the SAME
- * withFileMutationQueue transaction, and search/list/read exercise read-only
- * paths with no write authority.
+ * commands, the read-only diagnostics command, and automatic Memory Recall
+ * (`memory:recall-receipt`) before each eligible direct human run. All Store
+ * behavior shares ONE validated Store service; every write is bounded by the
+ * SAME withFileMutationQueue transaction, search/list/read/recall exercise
+ * read-only paths with no write authority, and automatic recall never mutates
+ * the Store, tools, trust, system prompt, or another extension's state.
  */
 export function registerMemoryExtension(
 	pi: ExtensionAPI,
@@ -55,6 +58,12 @@ export function registerMemoryExtension(
 		...(dependencies.storeFs === undefined ? {} : { fs: dependencies.storeFs }),
 	});
 	const authority = new MemoryWriteAuthority(pi, config);
+	new MemoryRecall(pi, {
+		config,
+		service,
+		onMessagePrepared: (content) => authority.expectRecallMessage(content),
+	});
+	registerRecallMessageRenderer(pi);
 
 	registerMemoryWriteTool(pi, { service, authority });
 	registerMemoryReadTool(pi, service);
