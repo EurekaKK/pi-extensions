@@ -336,6 +336,7 @@ describe("automatic recall selection at the before_agent_start seam", () => {
 		expect(message?.details?.counts).toEqual({
 			matched: 1,
 			selected: 1,
+			visibleOmitted: 0,
 			recordOmitted: 0,
 			characterOmitted: 0,
 		});
@@ -375,7 +376,13 @@ describe("automatic recall budget, receipt, and framing", () => {
 		await h.input("workspaces");
 		const message = await h.recall();
 
-		expect(message?.details?.counts).toEqual({ matched: 3, selected: 2, recordOmitted: 1, characterOmitted: 0 });
+		expect(message?.details?.counts).toEqual({
+			matched: 3,
+			selected: 2,
+			visibleOmitted: 0,
+			recordOmitted: 1,
+			characterOmitted: 0,
+		});
 		expect(message?.details?.budgets).toEqual({ maxRecords: 2, maxChars: config.recall.maxChars });
 		expect(message?.details?.truncated).toBe(false);
 		expect(message?.content).toContain("build workspaces one");
@@ -434,7 +441,13 @@ describe("automatic recall budget, receipt, and framing", () => {
 		await h.input(query);
 		const message = await h.recall();
 
-		expect(message?.details?.counts).toEqual({ matched: 2, selected: 1, recordOmitted: 0, characterOmitted: 1 });
+		expect(message?.details?.counts).toEqual({
+			matched: 2,
+			selected: 1,
+			visibleOmitted: 0,
+			recordOmitted: 0,
+			characterOmitted: 1,
+		});
 		expect(message?.details?.truncated).toBe(true);
 		expect(message?.content).toContain("x".repeat(120));
 		expect(message?.content).not.toContain("y".repeat(120));
@@ -459,7 +472,13 @@ describe("automatic recall budget, receipt, and framing", () => {
 
 		expect(message).toBeDefined();
 		expect(message?.details?.selections).toEqual([]);
-		expect(message?.details?.counts).toEqual({ matched: 1, selected: 0, recordOmitted: 0, characterOmitted: 1 });
+		expect(message?.details?.counts).toEqual({
+			matched: 1,
+			selected: 0,
+			visibleOmitted: 0,
+			recordOmitted: 0,
+			characterOmitted: 1,
+		});
 		expect(message?.details?.truncated).toBe(true);
 		expect(message?.content).toContain("UNTRUSTED DATA");
 		expect(message?.content).not.toContain("x".repeat(100));

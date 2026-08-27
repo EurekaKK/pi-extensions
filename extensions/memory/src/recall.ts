@@ -23,8 +23,9 @@ import { characterLength, hasRejectedControlCharacters } from "./normalize.js";
 import { extractSearchTokens } from "./ranking.js";
 import { compactLines } from "./receipt.js";
 import { singleLine } from "./search.js";
-import type { MemorySearchOutcome, MemoryService } from "./service.js";
+import type { MemorySearchAllOutcome, MemoryService } from "./service.js";
 import type { MemoryProvenanceV1, MemoryRecordV1 } from "./store.js";
+import { collectVisibleRecallFingerprints } from "./visible.js";
 
 /**
  * Structured v1 Automatic Recall Receipt.
@@ -73,7 +74,9 @@ export interface MemoryRecallReceiptV1 {
 		readonly matched: number;
 		/** Record blocks actually included in the model-visible message. */
 		readonly selected: number;
-		/** Matches excluded by the record budget (`recall.maxRecords`). */
+		/** Ranked matches whose unchanged fingerprint was already model-visible in the active branch (#11). */
+		readonly visibleOmitted: number;
+		/** Non-visible matches excluded by the record budget (`recall.maxRecords`). */
 		readonly recordOmitted: number;
 		/** Ranked records excluded by the character budget (`recall.maxChars`). */
 		readonly characterOmitted: number;
@@ -176,7 +179,8 @@ interface RecallRendered {
  * consumed in ranked order and the first one that no longer fits (plus every
  * following one) counts as character-omitted. A trailing omissions footer is
  * added only when it fits, so the total model-visible text never exceeds the
- * budget.
+ * budget. When some ranked records were already model-visible, a distinct
+ * `visibleOmitted` marker reports them separately from character omissions.
  */
 interface RecallRenderedSelection extends MemoryRecallSelectionV1 {
 	/** Full content is model-visible but omitted from structured receipt details. */
@@ -187,6 +191,7 @@ function renderRecallText(
 	selections: readonly RecallRenderedSelection[],
 	prefix: string,
 	maxChars: number,
+	visibleOmitted: number,
 ): RecallRendered {
 	const boundedPrefix = truncateCharacters(prefix, maxChars);
 	const parts: string[] = [boundedPrefix];
@@ -208,6 +213,11 @@ function renderRecallText(
 	if (characterOmitted > 0) {
 		const noun = characterOmitted === 1 ? "record" : "records";
 		const marker = `… ${characterOmitted} more ${noun} not shown within the ${maxChars} character budget`;
+		if (total + 1 + characterLength(marker) <= maxChars) parts.push(marker);
+	}
+	if (visibleOmitted > 0) {
+		const noun = visibleOmitted === 1 ? "record" : "records";
+		const marker = `… ${visibleOmitted} ${noun} already visible in context, omitted`;
 		if (total + 1 + characterLength(marker) <= maxChars) parts.push(marker);
 	}
 	return { text: parts.join("\n"), selected, characterOmitted };
@@ -232,14 +242,29 @@ export interface BuiltRecall {
 }
 
 /**
- * Build the v1 Recall Receipt plus its bounded model-visible text from a
- * `memory_search` outcome. Only non-empty selections produce a message;
- * everything is deterministic (ranked order, stable fingerprints, exact counts).
+ * Build the v1 Recall Receipt plus its bounded model-visible text from the
+ * fully ranked `memory_search` outcome. Ranked matches whose unchanged
+ * fingerprint is already model-visible in the active branch are filtered
+ * BEFORE the record budget, so unseen lower-ranked matches backfill; when
+ * every relevant fingerprint is already visible, no message is built and
+ * `undefined` is returned (the run stays silent). Everything is deterministic
+ * (ranked order, stable fingerprints, exact counts).
  */
-export function buildRecall(outcome: MemorySearchOutcome, directory: string, config: MemoryConfigV1): BuiltRecall {
+export function buildRecall(
+	outcome: MemorySearchAllOutcome,
+	visibleFingerprints: ReadonlySet<string>,
+	directory: string,
+	config: MemoryConfigV1,
+): BuiltRecall | undefined {
 	const maxRecords = config.recall.maxRecords;
 	const maxChars = config.recall.maxChars;
-	const selections: readonly RecallRenderedSelection[] = outcome.hits.map(({ record, score }) => ({
+	const ranked = outcome.ranked;
+	const candidates = ranked.filter(({ record }) => !visibleFingerprints.has(recordFingerprint(record)));
+	const visibleOmitted = ranked.length - candidates.length;
+	if (candidates.length === 0) return undefined;
+	const recordOmitted = Math.max(0, candidates.length - maxRecords);
+	const budgeted = candidates.slice(0, maxRecords);
+	const selections: readonly RecallRenderedSelection[] = budgeted.map(({ record, score }) => ({
 		id: record.id,
 		revision: record.revision,
 		provenance: record.provenance,
@@ -248,7 +273,6 @@ export function buildRecall(outcome: MemorySearchOutcome, directory: string, con
 		score,
 		fingerprint: recordFingerprint(record),
 	}));
-	const recordOmitted = Math.max(0, outcome.matchedCount - outcome.hits.length);
 	const prefix = [
 		UNTRUSTED_WARNING,
 		"",
@@ -257,7 +281,7 @@ export function buildRecall(outcome: MemorySearchOutcome, directory: string, con
 		`Query: ${outcome.query}`,
 		"",
 	].join("\n");
-	const rendered = renderRecallText(selections, prefix, maxChars);
+	const rendered = renderRecallText(selections, prefix, maxChars, visibleOmitted);
 	const included: readonly MemoryRecallSelectionV1[] = selections.slice(0, rendered.selected).map((selection) => ({
 		id: selection.id,
 		revision: selection.revision,
@@ -277,6 +301,7 @@ export function buildRecall(outcome: MemorySearchOutcome, directory: string, con
 		counts: {
 			matched: outcome.matchedCount,
 			selected: rendered.selected,
+			visibleOmitted,
 			recordOmitted,
 			characterOmitted: rendered.characterOmitted,
 		},
@@ -369,20 +394,36 @@ export class MemoryRecall {
 		return this.#recall(query, context);
 	}
 
-	async #recall(query: string, context: ExtensionContext): Promise<BeforeAgentStartEventResult | undefined> {
-		let outcome: MemorySearchOutcome;
+	/**
+	 * Model-visible fingerprints of the CURRENT active branch, reconstructed
+	 * fresh on every run from persisted structured receipt details (#11).
+	 * Corrupt details and branch-read failures are fail-soft: a broken view
+	 * can only cause re-injection, never a suppressed recall.
+	 */
+	static visibleFingerprints(context: ExtensionContext): ReadonlySet<string> {
 		try {
-			outcome = await this.#service.search(context, { query }, context.signal);
+			return collectVisibleRecallFingerprints(context.sessionManager.buildContextEntries());
+		} catch {
+			return new Set<string>();
+		}
+	}
+
+	async #recall(query: string, context: ExtensionContext): Promise<BeforeAgentStartEventResult | undefined> {
+		let outcome: MemorySearchAllOutcome;
+		try {
+			outcome = await this.#service.searchAll(context, { query }, context.signal);
 		} catch (error) {
 			// Any Store/FS failure on the read path skips injection; unhealthy
 			// Stores additionally warn once, sanitized, when UI exists.
 			this.#warnIfUnhealthy(error, context);
 			return undefined;
 		}
-		if (outcome.kind !== "ok" || outcome.hits.length === 0) return undefined;
+		if (outcome.kind !== "ok" || outcome.ranked.length === 0) return undefined;
 		const directory = await this.#resolveDirectory(context.cwd);
 		if (directory === undefined) return undefined;
-		const built = buildRecall(outcome, directory, this.#config);
+		const visible = MemoryRecall.visibleFingerprints(context);
+		const built = buildRecall(outcome, visible, directory, this.#config);
+		if (built === undefined) return undefined;
 		this.#onMessagePrepared?.(built.text);
 		return {
 			message: {

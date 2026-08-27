@@ -115,6 +115,22 @@ export interface MemorySearchOutcome {
 	readonly hits: readonly { readonly record: MemoryRecordV1; readonly score: number }[];
 }
 
+/**
+ * Uncapped ranked outcome for automatic Recall deduplication (#11). The exact
+ * same engine that ranks `MemorySearchOutcome.hits` ranks every active match;
+ * Recall filters visible fingerprints and applies its own record budget on top.
+ */
+export interface MemorySearchAllOutcome {
+	readonly kind: "ok";
+	readonly query: string;
+	/** The applied recall record budget (`recall.maxRecords`). */
+	readonly appliedLimit: number;
+	/** Every active record with a non-zero lexical score, fully ranked. */
+	readonly matchedCount: number;
+	/** The full ranked hit list (score descending, recency tie-break), uncapped. */
+	readonly ranked: readonly { readonly record: MemoryRecordV1; readonly score: number }[];
+}
+
 /** Active listing input; `limit` is capped by the configured recall budget. */
 export interface MemoryListInput {
 	readonly limit?: number;
@@ -264,6 +280,35 @@ function validateOperationInput(input: MemoryWriteInput): ResolvedOperation {
 		);
 	}
 	return { targetId: input.targetId, targetRevision: input.targetRevision };
+}
+
+/**
+ * Rank every active record against one normalized query with the pure lexical
+ * engine: score descending, then the deterministic recency (and id/revision)
+ * tie-break. `MemoryService.search` slices from this list under the record
+ * budget; `MemoryService.searchAll` exposes it uncapped for Recall.
+ */
+function rankActiveMatches(
+	store: MemoryStoreV1,
+	query: string,
+): readonly { readonly record: MemoryRecordV1; readonly score: number }[] {
+	const queryCounts = countTokenOccurrences(extractSearchTokens(query));
+	const scored: { readonly record: MemoryRecordV1; readonly score: number }[] = [];
+	for (const record of store.records) {
+		if (record.state !== "active") continue;
+		const summaryCounts = countTokenOccurrences(extractSearchTokens(record.summary));
+		const contentCounts = countTokenOccurrences(extractSearchTokens(record.content));
+		const score = scoreSearchTokens(queryCounts, summaryCounts, contentCounts);
+		if (score === 0) continue;
+		scored.push({ record, score });
+	}
+	// Relevance first: score descending; recency (and then id/revision) is
+	// only a deterministic tie-breaker, never a promotion mechanism.
+	scored.sort((a, b) => {
+		if (a.score !== b.score) return b.score - a.score;
+		return compareRecency(a.record, b.record);
+	});
+	return scored;
 }
 
 /**
@@ -528,22 +573,7 @@ export class MemoryService {
 		const query = validateSearchQuery(input.query, this.#config.store.maxSummaryChars);
 		const { applied, requested } = resolveRecordLimit(input.limit, this.#config.recall.maxRecords);
 		const store = await this.#readStore(context.cwd, signal);
-		const queryCounts = countTokenOccurrences(extractSearchTokens(query));
-		const scored: { readonly record: MemoryRecordV1; readonly score: number }[] = [];
-		for (const record of store.records) {
-			if (record.state !== "active") continue;
-			const summaryCounts = countTokenOccurrences(extractSearchTokens(record.summary));
-			const contentCounts = countTokenOccurrences(extractSearchTokens(record.content));
-			const score = scoreSearchTokens(queryCounts, summaryCounts, contentCounts);
-			if (score === 0) continue;
-			scored.push({ record, score });
-		}
-		// Relevance first: score descending; recency (and then id/revision) is
-		// only a deterministic tie-breaker, never a promotion mechanism.
-		scored.sort((a, b) => {
-			if (a.score !== b.score) return b.score - a.score;
-			return compareRecency(a.record, b.record);
-		});
+		const scored = rankActiveMatches(store, query);
 		return {
 			kind: "ok",
 			query,
@@ -552,6 +582,22 @@ export class MemoryService {
 			matchedCount: scored.length,
 			hits: scored.slice(0, applied),
 		};
+	}
+
+	/**
+	 * Uncapped ranked search for automatic Recall. Uses the exact same pure
+	 * ranking engine as `search`; Recall layers visible-fingerprint filtering
+	 * and its own record budget on top of the full ranked list.
+	 */
+	async searchAll(
+		context: ExtensionContext,
+		input: { readonly query: string },
+		signal?: AbortSignal,
+	): Promise<MemorySearchAllOutcome> {
+		const query = validateSearchQuery(input.query, this.#config.store.maxSummaryChars);
+		const store = await this.#readStore(context.cwd, signal);
+		const ranked = rankActiveMatches(store, query);
+		return { kind: "ok", query, appliedLimit: this.#config.recall.maxRecords, matchedCount: ranked.length, ranked };
 	}
 
 	async listActive(

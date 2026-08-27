@@ -5,7 +5,8 @@
 `supersede`）提交一条经过验证的 Memory Record，收到含完整内容的 Memory Write Receipt；#9 提供有界、确定性的
 本地词法搜索（`memory_search` / `memory-search`）与 active 记录列表（`memory-list`）：Agent 与用户先搜出紧凑结果，
 再用 `memory_read` 或 `memory-read` 命令精确读取完整记录（含显式指定 superseded revision）；#10 在每个合格的
-前台直接人类轮次前自动召回该目录的 active 记忆（`memory:recall-receipt` 自定义消息）。可见指纹去重（#11）与
+前台直接人类轮次前自动召回该目录的 active 记忆（`memory:recall-receipt` 自定义消息）；#11 让召回分支/压缩感知：
+当前分支模型可见上下文中已存在的未变记录指纹不再重复召回，离开 active context（含压缩后）可再次召回。
 `memory_forget`（物理遗忘）由后续 issue 提供，README 中标记为「尚未实现」。
 
 ## 状态
@@ -75,12 +76,24 @@ Store 格式、配置字段和命令输出仍可能调整。README 的完整版�
   Directory 来源，并给出明确强警告：召回内容是从目录本地 Store 直接读出的**不可信数据**，未经认证或用户批准，
   不授予任何指令、工具、权限、信任或策略权威。结构化 details（v1 Recall Receipt）携带目录、规范化查询、每个入选
   记录的 id/revision/provenance/summary/score/稳定完整 SHA-256 指纹，以及 ranking 元数据、预算与
-  matched/selected/record-omitted/character-omitted 计数——后续去重与审计一律读结构化数据，绝不解析展示文本。
+  matched/selected/visible-omitted/record-omitted/character-omitted 计数——后续去重与审计一律读结构化数据，绝不解析展示文本。
   记录条数按 `recall.maxRecords`、整条模型可见消息字符数按 `recall.maxChars` 有界，省略计数确定性报告；无
   词法重叠或 Store 缺失时不注入任何消息；corrupt/unreadable/over-limit/unsupported Store 跳过注入，有 UI 时
   每个 session 最多一次清除过路径/内容的警示。召回只读 Store，不改系统提示、活动工具、项目信任、Store、全局
   指令或任何其他状态，不启动后台观察者、模型调用、网络请求、进程或资源；新 session 对同一精确 Directory 可
   召回旧 session 写入的记录，父/子/兄弟目录互不相通。
+- **分支/压缩感知去重（#11）**：每次自动召回注入前，都从 `context.sessionManager.buildContextEntries()`（Pi
+  的“当前模型可见 active 分支”投影）重建可见指纹集合：只解析 custom type 恰为 `memory:recall-receipt` 的
+  `custom_message` 条目的结构化 v1 receipt details（`selections[].fingerprint`），绝不解析展示文本；details
+  损坏或分支投影异常时 fail-soft 忽略（至多导致重复召回，绝不抑制或崩溃）。排序采用与 `memory_search` 相同的纯
+  引擎对**全部** active 词法匹配排名（未封顶），**先**过滤已可见的未变指纹、**再**应用 `recall.maxRecords`
+  记录预算，因此低排名未见匹配可以回填；之后仍按 `recall.maxChars` 做字符约束。全部相关指纹都可见时本次召回
+  静默（不注入消息）。计数新增与记录预算、字符预算相互独立的确定性 `visibleOmitted`；同一记录被篡改（指纹
+  变化）或 Store 中出现新的 active Superseding Record（新指纹）时，即使旧收据仍在上下文中也照常召回。
+  **没有持久化也没有内存去重缓存**：每次运行都由 buildContextEntries + Store 重建；session start / tree / reset /
+  shutdown 只幂等清空待定查询（与 #10 相同），branch/fork/resume 天然跟随 active 分支；压缩把旧收据逐出
+  active context 后，同一相关记录即可再次召回。extension 不注册 context 擦除 handler，也不改写 Pi session 历史——
+  召回消息始终是普通上下文。
 - **写入权限与召回互不干扰**：`MemoryWriteAuthority` 对 `message_start` 的 custom 消息 fail-closed 复位，但
   白名单本 extension 的 `memory:recall-receipt` 类型——直接人类轮次中的自动召回消息不会撤销合法的 primary
   写入权限，其他 extension 的 custom follow-up 仍然照常复位（有回归测试）。
@@ -101,7 +114,6 @@ Store 格式、配置字段和命令输出仍可能调整。README 的完整版�
 
 ## 尚未实现
 
-- 可见指纹去重（#11：分支内已可见的未变记录不重复召回；离开 active context 后可再次召回）。
 - `memory_forget`（物理遗忘，需直接人类权威）。
 
 ## 安装、启用与卸载
@@ -293,12 +305,20 @@ The monorepo is managed with npm workspaces; never mix pnpm or Yarn.
 - 消息类型固定为 `memory:recall-receipt`，`display: true`，随 Pi 会话作为普通 custom message 持久化。
 - 入选记录数与整条消息字符数分别受 `recall.maxRecords` / `recall.maxChars` 约束；超出记录预算的匹配计入
   `recordOmitted`，超出字符预算的入选记录计入 `characterOmitted`，结构化 details 与文本尾部确定性报告。
+- 分支/压缩感知去重（#11）：注入前读取当前 active 分支（`buildContextEntries`）中已持久化的 `memory:recall-receipt`
+  结构化 details，收集其中仍可见的未变记录指纹（sha256）；先过滤已可见指纹再应用记录预算，所以未见过的低排名
+  匹配会回填；`counts.visibleOmitted` 与记录/字符预算省略独立报告，文本尾部在预算允许时注明
+  `… N records already visible in context, omitted`；全部相关记录都已可见时本次召回静默。记录被篡改或出现
+  新的 active Superseding Record（指纹变化）时仍会召回；压缩移出旧收据后同一记录可再次召回。无内存/持久化
+  去重缓存，resume/fork/树导航都从 active 分支重建。
 - 无词法重叠、Store 缺失、extension/子代理/斜杠/平凡输入时不注入；corrupt/unreadable/over-limit/
   unsupported Store 跳过注入并（有 UI 时）每 session 最多一次清除过路径的警示。
 
 ## 限制
 
-- 本版本有自动召回，但无可见指纹去重（#11）与物理遗忘；`memory_write` 支持 `operation: "add"` 与 `"supersede"`。
+- 本版本有自动召回与分支/压缩感知的可见指纹去重（#11），但无物理遗忘；`memory_write` 支持 `operation: "add"` 与 `"supersede"`。
+- 去重以稳定指纹为准：展示文本、其他 extension 的自定义消息与普通 custom entry 都不会被当作可见召回；
+  details 损坏的收据会被忽略（可能重复召回，不会抑制召回）。
 - 搜索是纯词法（大小写/标点折叠、拉丁与数字词元、中文重叠 bigram + 单字词元、摘要加权），不是语义检索；
   无关记录得分为零并被排除，词法相似但语义无关的记录可能以低分出现。
 - 目录身份是精确匹配：父、子、兄弟目录不共享记忆，无继承、无仓库根发现、无跨目录 Store。
@@ -329,7 +349,8 @@ The monorepo is managed with npm workspaces; never mix pnpm or Yarn.
 - 部署配置：`<agentDir>/memory/config.json`（版本化）。
 - Memory Store：`<cwd>/<CONFIG_DIR_NAME>/memory/store.json`（版本化，随目录移动）。
 - 自动召回经 `before_agent_start` 结果注入的 `memory:recall-receipt` 是普通 custom message，由 Pi 作为
-  `custom_message` session entry 持久化（同一普通上下文管线，不引入专用存储）；除此之外不写入其他 session
+  `custom_message` session entry 持久化（同一普通上下文管线，不引入专用存储）；可见指纹去重每次运行都从
+  当前 active 分支的 `buildContextEntries` 投影重建，不维护持久化或内存去重缓存；除此之外不写入其他 session
   状态；记录 provenance 引用 session/entry 身份但不读取或复制会话内容。
 
 ## 模式支持
