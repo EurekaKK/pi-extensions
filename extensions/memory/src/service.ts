@@ -6,6 +6,7 @@ import {
 	MEMORY_INPUT_REJECTED,
 	MEMORY_PRIMARY_AGENT_AUTHOR,
 	MEMORY_RECORD_NOT_FOUND,
+	MEMORY_SEARCH_INPUT_REJECTED,
 	MEMORY_STORE_CORRUPT,
 	MEMORY_STORE_OVER_LIMIT,
 	MEMORY_STORE_SCHEMA,
@@ -19,6 +20,7 @@ import {
 import { MemoryError } from "./errors.js";
 import { resolveDirectoryIdentity } from "./identity.js";
 import { characterLength, hasRejectedControlCharacters, isSecretLike, normalizeRecordText } from "./normalize.js";
+import { compareRecency, countTokenOccurrences, extractSearchTokens, scoreSearchTokens } from "./ranking.js";
 import {
 	classifyMemoryStore,
 	type MemoryProvenanceV1,
@@ -94,6 +96,39 @@ export interface MemoryReadInput {
 }
 
 export type MemoryReadOutcome = { readonly kind: "found"; readonly record: MemoryRecordV1 };
+
+/** Bounded lexical search input; `limit` is capped by the configured recall budget. */
+export interface MemorySearchInput {
+	readonly query: string;
+	readonly limit?: number;
+}
+
+export interface MemorySearchOutcome {
+	readonly kind: "ok";
+	readonly query: string;
+	readonly requestedLimit?: number;
+	/** The applied record budget: `min(requestedLimit, recall.maxRecords)`. */
+	readonly appliedLimit: number;
+	/** All active records with a non-zero lexical score (before the cap). */
+	readonly matchedCount: number;
+	/** Ranked active matches, score descending, capped by `appliedLimit`. */
+	readonly hits: readonly { readonly record: MemoryRecordV1; readonly score: number }[];
+}
+
+/** Active listing input; `limit` is capped by the configured recall budget. */
+export interface MemoryListInput {
+	readonly limit?: number;
+}
+
+export interface MemoryListOutcome {
+	readonly kind: "ok";
+	readonly requestedLimit?: number;
+	readonly appliedLimit: number;
+	/** All active records in the Store (before the cap). */
+	readonly totalActive: number;
+	/** Active records ordered by recency and capped by `appliedLimit`. */
+	readonly records: readonly MemoryRecordV1[];
+}
 
 export interface MemoryServiceOptions {
 	readonly config: MemoryConfigV1;
@@ -229,6 +264,40 @@ function validateOperationInput(input: MemoryWriteInput): ResolvedOperation {
 		);
 	}
 	return { targetId: input.targetId, targetRevision: input.targetRevision };
+}
+
+/**
+ * Search-query capture policy: NFC-folded, non-blank, free of every control
+ * character (the query is rerendered into tool/command output, so even tab and
+ * newline would break the compact layout), and bounded by the summary scale.
+ */
+function validateSearchQuery(query: string, maxChars: number): string {
+	const normalized = query.normalize("NFC").trim();
+	if (normalized.length === 0) {
+		throw new MemoryError(MEMORY_SEARCH_INPUT_REJECTED, "memory_search query must not be blank");
+	}
+	if (hasRejectedControlCharacters(normalized) || /[\t\n\r]/u.test(normalized)) {
+		throw new MemoryError(MEMORY_SEARCH_INPUT_REJECTED, "memory_search query contains unsupported control characters");
+	}
+	if (characterLength(normalized) > maxChars) {
+		throw new MemoryError(MEMORY_SEARCH_INPUT_REJECTED, `memory_search query exceeds the ${maxChars} character limit`);
+	}
+	return normalized;
+}
+
+/**
+ * Resolve the effective record budget: an explicit limit must be a positive
+ * safe integer and is capped by the configured recall budget.
+ */
+function resolveRecordLimit(
+	limit: number | undefined,
+	maxRecords: number,
+): { readonly applied: number; readonly requested: number | undefined } {
+	if (limit === undefined) return { applied: maxRecords, requested: undefined };
+	if (!Number.isSafeInteger(limit) || limit < 1) {
+		throw new MemoryError(MEMORY_SEARCH_INPUT_REJECTED, "memory search limit must be a positive safe integer");
+	}
+	return { applied: Math.min(limit, maxRecords), requested: limit };
 }
 
 /**
@@ -449,5 +518,69 @@ export class MemoryService {
 			throw new MemoryError(MEMORY_RECORD_NOT_FOUND, `memory record "${input.id}"${revision} was not found`);
 		}
 		return { kind: "found", record };
+	}
+
+	async search(
+		context: ExtensionContext,
+		input: MemorySearchInput,
+		signal?: AbortSignal,
+	): Promise<MemorySearchOutcome> {
+		const query = validateSearchQuery(input.query, this.#config.store.maxSummaryChars);
+		const { applied, requested } = resolveRecordLimit(input.limit, this.#config.recall.maxRecords);
+		const store = await this.#readStore(context.cwd, signal);
+		const queryCounts = countTokenOccurrences(extractSearchTokens(query));
+		const scored: { readonly record: MemoryRecordV1; readonly score: number }[] = [];
+		for (const record of store.records) {
+			if (record.state !== "active") continue;
+			const summaryCounts = countTokenOccurrences(extractSearchTokens(record.summary));
+			const contentCounts = countTokenOccurrences(extractSearchTokens(record.content));
+			const score = scoreSearchTokens(queryCounts, summaryCounts, contentCounts);
+			if (score === 0) continue;
+			scored.push({ record, score });
+		}
+		// Relevance first: score descending; recency (and then id/revision) is
+		// only a deterministic tie-breaker, never a promotion mechanism.
+		scored.sort((a, b) => {
+			if (a.score !== b.score) return b.score - a.score;
+			return compareRecency(a.record, b.record);
+		});
+		return {
+			kind: "ok",
+			query,
+			...(requested === undefined ? {} : { requestedLimit: requested }),
+			appliedLimit: applied,
+			matchedCount: scored.length,
+			hits: scored.slice(0, applied),
+		};
+	}
+
+	async listActive(
+		context: ExtensionContext,
+		input: MemoryListInput,
+		signal?: AbortSignal,
+	): Promise<MemoryListOutcome> {
+		const { applied, requested } = resolveRecordLimit(input.limit, this.#config.recall.maxRecords);
+		const store = await this.#readStore(context.cwd, signal);
+		const active = store.records.filter((record) => record.state === "active").sort(compareRecency);
+		return {
+			kind: "ok",
+			...(requested === undefined ? {} : { requestedLimit: requested }),
+			appliedLimit: applied,
+			totalActive: active.length,
+			records: active.slice(0, applied),
+		};
+	}
+
+	/** Shared read-only Store classification for search/list; never mutates anything. */
+	async #readStore(cwd: string, signal?: AbortSignal): Promise<MemoryStoreV1> {
+		const identity = await resolveDirectoryIdentity(cwd);
+		const classification = await classifyMemoryStore({
+			storePath: getMemoryStorePath(identity),
+			limits: this.#config.store,
+			...(signal === undefined ? {} : { signal }),
+		});
+		if (classification.kind === "missing") return emptyStore(identity);
+		if (classification.kind !== "healthy") throw storeFailureError(classification);
+		return classification.store;
 	}
 }

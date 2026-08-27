@@ -31,15 +31,21 @@ describe("memory extension loading", () => {
 		await rm(agentDir, { recursive: true, force: true });
 	});
 
-	it("loads the strict default config, creates it, and registers the #7 write/read surface", async () => {
+	it("loads the strict default config, creates it, and registers the #7 + #8 + #9 surface", async () => {
 		const harness = new LoadingHarness();
 		await harness.load(agentDir);
 
 		await expect(readFile(getMemoryConfigPath(agentDir), "utf8")).resolves.toContain('"proactiveWrites": true');
-		expect(harness.host.tools.map((tool) => tool.name).sort()).toEqual(["memory_read", "memory_write"]);
+		expect(harness.host.tools.map((tool) => tool.name).sort()).toEqual([
+			"memory_read",
+			"memory_search",
+			"memory_write",
+		]);
 		expect(harness.host.commands.has(MEMORY_STATUS_COMMAND)).toBe(true);
 		expect(harness.host.commands.has("memory-read")).toBe(true);
-		expect(harness.host.commands.size).toBe(2);
+		expect(harness.host.commands.has("memory-search")).toBe(true);
+		expect(harness.host.commands.has("memory-list")).toBe(true);
+		expect(harness.host.commands.size).toBe(4);
 		await harness.sessionStart();
 		expect(harness.host.ui.notify).not.toHaveBeenCalled();
 	});

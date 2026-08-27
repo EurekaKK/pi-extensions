@@ -228,9 +228,9 @@ describe("memory extension mode safety", () => {
 				withFileMutationQueue,
 			});
 
-			expect(host.tools.map((tool) => tool.name).sort()).toEqual(["memory_read", "memory_write"]);
+			expect(host.tools.map((tool) => tool.name).sort()).toEqual(["memory_read", "memory_search", "memory_write"]);
 			expect(host.commands.has(MEMORY_STATUS_COMMAND)).toBe(true);
-			expect(host.commands.size).toBe(2);
+			expect(host.commands.size).toBe(4);
 			expect(host.context.model).toBeUndefined();
 
 			const command = host.commands.get(MEMORY_STATUS_COMMAND);

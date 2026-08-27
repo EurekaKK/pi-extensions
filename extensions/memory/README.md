@@ -2,8 +2,9 @@
 
 为精确的 Working Directory 保存并动态召回本地长期记忆（Directory Memory）。本 extension 正处于分阶段实现中：
 #7 + #8 打通完整的写入/读取路径——在前台直接人类轮次中，primary Agent 通过 `memory_write`（`add` 或
-`supersede`）提交一条经过验证的 Memory Record，收到含完整内容的 Memory Write Receipt，并可在新 session 中通过
-`memory_read` 或 `memory-read` 命令精确读取（含显式指定 superseded revision）。搜索、自动召回与遗忘由后续
+`supersede`）提交一条经过验证的 Memory Record，收到含完整内容的 Memory Write Receipt；#9 提供有界、确定性的
+本地词法搜索（`memory_search` / `memory-search`）与 active 记录列表（`memory-list`）：Agent 与用户先搜出紧凑结果，
+再用 `memory_read` 或 `memory-read` 命令精确读取完整记录（含显式指定 superseded revision）。自动召回与遗忘由后续
 issue 提供，README 中标记为「尚未实现」。
 
 ## 状态
@@ -47,8 +48,23 @@ Store 格式、配置字段和命令输出仍可能调整。README 的完整版�
   `session_tree`、`session_shutdown` 都会 fail-closed 复位。
   session 分支上持久存在 `subagent:descriptor`（sub-agent extension 写入）时拒绝写入但读取保持可用；该字符串是
   两个源码隔离 extension 之间的持久 session protocol，未形成安装依赖，任一侧改名时必须同步更新并回归测试；
-  `proactiveWrites: false` 配置直接拒绝写入。`memory_read` 与 `memory-read` 命令不做权限检查，任何
-  来源（含 subagent）都可读取。
+  `proactiveWrites: false` 配置直接拒绝写入。`memory_read`、`memory_search`、`memory-search` 与
+  `memory-list` 不做权限检查，任何来源（含 subagent）都可搜索与读取。
+- **有界确定性搜索（#9）**：`memory_search` 只检索 active 记录；superseded 记录永不进入搜索结果，但
+  `memory_read` 仍可按精确 id（+revision）读取历史。排序完全由模型无关的纯词法相关性决定：查询与记录先做
+  NFKC 兼容归一化 + 小写折叠，Unicode 拉丁字母（含组合标记）与数字连续段为词元，任意其他字符（含标点、
+  连字符、下划线）都是分隔符，所以 `npm-workspaces`、`npm, workspaces`、`npm workspaces` 等价；Han（CJK
+  表意，覆盖当前 Unicode Unified Ideograph 扩展范围）连续段每个字产生一个词元并
+  对相邻字对产生重叠 bigram，单字段只产生单字词元，混合 CJK/Latin 与孤立单字因此都是确定性的。相关性分数是
+  整数：对每个查询词元累加「查询出现次数 ×（摘要次数 × `SUMMARY_WEIGHT`(2) + 内容次数）」，重复词与服务端重复
+  出现都被放大，摘要匹配显式高于内容匹配；零词法重叠的记录被排除，绝不拿最新记录填充结果。排序先按分数降序，
+  同分才按 recency（`updatedAt`、再 `createdAt`，均降序）作确定性 tie-break，最后按 `id` 升序、`revision` 升序，
+  recency 永远不能把不相关的新记录抬到旧记录之上。结果数受 `recall.maxRecords`（及工具可选 `limit`，取两者
+  较小值）约束；query 受 `store.maxSummaryChars` 字符上限约束。渲染文本受 `recall.maxChars` 字符预算约束，
+  超出部分显式报告 `omittedCount`（记录预算之外）
+  与 `truncatedCount`（字符预算之外）并在文本尾部注明。紧凑结果只含 id/revision/summary/provenance/score/
+  时间戳，绝不包含完整 content；`memory_search` 与两个命令都是同一只读 Store 路径上的薄适配器，无写入权限、
+  无独立语义。无 embeddings/向量库/SQLite/网络/重排模型/provider/watcher，也不新增运行时依赖。
 - **事务与原子提交**：每次写入都是一个完整的「读取—校验—变更—原子写回」事务，整体包在 Pi 的
   `withFileMutationQueue(storePath, ...)` 中，因此并发写入串行化、不丢失更新。提交使用 Store 同目录下的
   独占临时文件（`O_EXCL`）、flush/sync 后原子 rename；任何失败（写入、sync、rename、取消）都会清理临时
@@ -66,8 +82,7 @@ Store 格式、配置字段和命令输出仍可能调整。README 的完整版�
 
 ## 尚未实现
 
-- `memory_search`、自动召回（before-agent-start 注入）与可见指纹去重。
-- `memory_forget`（物理遗忘）与相关收据。
+- 自动召回（before-agent-start 注入）、可见指纹去重与 `memory_forget`（物理遗忘）。
 
 ## 安装、启用与卸载
 
@@ -132,7 +147,8 @@ vendor；`@earendil-works/pi-ai`、`@earendil-works/pi-tui`、`typebox` 与 `@ea
   `MEMORY_WRITE_DENIED`，读取工具不受影响）。`automaticRecall` 为后续版本的独立开关。
 - `store.*`：Store 文档与记录的规模上限。写入同时受内容/摘要字符上限与记录数上限约束；
   落盘文档还受 `maxStoreBytes` 字节上限约束。
-- `recall.*`：自动召回的单次记录数与字符预算（后续版本）。
+- `recall.*`：搜索与列表的预算——`maxRecords` 是单次 `memory_search`/`memory-list` 返回的记录数上限
+  （工具可选 `limit` 超过它会被钳制），`maxChars` 是模型可见渲染文本的字符预算，超出部分显式截断。
 - `git.diagnosticTimeoutMs`：Git 跟踪诊断的短超时。
 
 以上数值均为**实验性默认策略**，后续评测可能调整，不视为公共契约。配置在整个进程加载一次，修改后执行 Pi
@@ -143,9 +159,11 @@ vendor；`@earendil-works/pi-ai`、`@earendil-works/pi-tui`、`typebox` 与 `@ea
 
 当前注册：
 
-- LLM 工具 `memory_write`（add / supersede；仅 primary 前台 Agent）、`memory_read`（精确读取，无权限限制）。
-- 用户命令 `memory-status`（只读诊断）、`memory-read <record-id> [<revision>]`（精确读取的便捷命令，
-  复用同一 Store 读取逻辑，无独立语义）。
+- LLM 工具 `memory_write`（add / supersede；仅 primary 前台 Agent）、`memory_read`（精确读取，无权限限制）、
+  `memory_search`（有界词法搜索，无权限限制）。
+- 用户命令 `memory-status`（只读诊断）、`memory-read <record-id> [<revision>]`（精确读取的便捷命令）、
+  `memory-search <query...> [--limit <n>]` 与 `memory-list [<limit>]`（搜索与 active 列表的便捷命令，复用
+  同一只读 Store 逻辑，无独立语义）。
 - 无 UI widget、无 custom entry、无消息渲染器；工具结果的紧凑/展开渲染随工具注册。
 
 ## 使用
@@ -196,17 +214,48 @@ memory_read(id="memory-<hex>")
 ```
 
 - 未找到时工具与命令都报告稳定错误码 `MEMORY_RECORD_NOT_FOUND`（命令输出 `... was not found`）。
+
+搜索与列表：
+
+```text
+memory_search(query="npm workspaces", limit=5)
+/memory-search npm workspaces --limit 5
+/memory-list
+/memory-list 5
+```
+
+- `memory_search` 只检索 active 记录，按词法相关性排序（见「设计要点」），返回紧凑命中：
+  id/revision/summary/provenance/score/时间戳，不含完整 content。
+- `memory-search` 命令把 `--limit <n>` 之外的整段参数当作查询（数值开头的查询不会被当作 limit，位置无歧义）；
+  非法参数输出 `Usage: /memory-search <query...> [--limit <n>]`。`memory-list` 按 recency 列出 active 记录，
+  `[<limit>]` 为可选整数。
+- 结果文本示例：
+
+  ```text
+  memory_search · 2 matches for "npm" (limit 8 · 1 omitted)
+  1. memory-<hex> (revision 1 · score 4 · updated 2025-01-02T00:00:00.000Z)
+     Summary: Build uses npm workspaces
+     Provenance: primary-agent · session <session-id> · /path/to/project
+  ```
+
+  当渲染文本触及 `recall.maxChars` 预算时，末尾显式标注 `… N more matches not shown (character budget …)`，
+  结构化 details 同时携带 `omittedCount` 与 `truncatedCount`。
+
 - `memory-status` 报告规范 Directory Identity、Store 健康、revision、记录计数、预算与 Git 跟踪状态，
   **不暴露**记录内容；缺失 Store 为 `missing (no Store yet)`，corrupt/unreadable/over-limit/unsupported
   各显示对应错误状态且从不写入。
 
 ## 限制
 
-- 本版本无搜索、自动召回与遗忘；`memory_write` 支持 `operation: "add"` 与 `"supersede"`。
+- 本版本已有搜索与精确读取，但无自动召回与遗忘；`memory_write` 支持 `operation: "add"` 与 `"supersede"`。
+- 搜索是纯词法（大小写/标点折叠、拉丁与数字词元、中文重叠 bigram + 单字词元、摘要加权），不是语义检索；
+  无关记录得分为零并被排除，词法相似但语义无关的记录可能以低分出现。
 - 目录身份是精确匹配：父、子、兄弟目录不共享记忆，无继承、无仓库根发现、无跨目录 Store。
 - v1 不验证 Store 的来源真实性；目录移动或复制后，下一次成功写入会采用当前规范 Directory Identity。
 - 不读取、索引、总结或改写 Pi 的 Global User Instructions。
 - 无后台观察者、reviewer、定时器、watcher、socket 或网络请求；Git 检查仅在被调用时短时运行子进程。
+- 搜索/列表/读取不建立任何索引、不写任何文件、不触发任何写入事务；
+  corrupt/unreadable/over-limit/unsupported Store 报稳定错误且字节不变。
 - 不要求模型/Provider；所有模式（TUI、RPC、JSON、print）安全加载，无 UI 等待。
 - 不发布到 AGENTS.md / README / ADR / Git；发布是独立的显式文档动作。
 - 信任门槛按维护者决定推迟到后续版本（见「设计要点」）。
@@ -214,6 +263,7 @@ memory_read(id="memory-<hex>")
 ## 权限与副作用
 
 - 仅在 Pi agent 目录创建/读取部署配置；仅读取/写入 Working Directory 内 `.pi/memory/` 下的 Store。
+- 搜索/列表/读取是完全只读的：不创建 Store、不创建目录、不修改任何文件；无效输入与取消也绝不产生字节变更。
 - 首次写入创建 `.pi/memory/`（0700）、作用域 `.gitignore` 标记（已有用户标记时保留）与 `store.json`
   （0600）；权限在支持 POSIX 模式的平台生效。
 - 每次写入都是 Pi `withFileMutationQueue` 包住的完整事务：读取—校验—变更—独占临时文件 + sync +
@@ -229,8 +279,10 @@ memory_read(id="memory-<hex>")
 
 ## 模式支持
 
-- TUI：工具结果由紧凑（单行调用 + 数行结果）与展开（完整文本）两种渲染器呈现；命令通过 notify 展示。
-- RPC：与 TUI 相同的 Store 契约；工具结果经结构化 details 与文本 content 返回，无终端假设。
+- TUI：工具结果由紧凑（单行调用 + 数行结果）与展开（完整文本）两种渲染器呈现；`memory-search`/`memory-list`
+  命令通过 notify 展示紧凑结果。
+- RPC：与 TUI 相同的 Store 契约；`memory_search` 结果经结构化 details（`memory:search-result`，含
+  `matchedCount`/`omittedCount`/`truncatedCount` 与紧凑 hits）与文本 content 返回，无终端假设。
 - JSON / print：不等待 UI，无 UI 时命令静默完成；工具行为与 TUI 完全一致。
 
 ## 开发命令

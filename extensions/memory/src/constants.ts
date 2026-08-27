@@ -20,6 +20,15 @@ export const MEMORY_WRITE_TOOL = "memory_write";
 /** LLM tool that reads one exact Memory Record by identity. */
 export const MEMORY_READ_TOOL = "memory_read";
 
+/** LLM tool that searches the active Memory Records with bounded lexical ranking. */
+export const MEMORY_SEARCH_TOOL = "memory_search";
+
+/** User command that searches active Memory Records (convenience over `memory_search`). */
+export const MEMORY_SEARCH_COMMAND = "memory-search";
+
+/** User command that lists the active Memory Records (read-only, bounded). */
+export const MEMORY_LIST_COMMAND = "memory-list";
+
 /**
  * Directory Memory Store locations are scoped inside the Working Directory's
  * Pi configuration area (`CONFIG_DIR_NAME` = `.pi` by current Pi definition).
@@ -75,6 +84,9 @@ export const MEMORY_INPUT_REJECTED = "MEMORY_INPUT_REJECTED";
 
 /** An exact record was not found by the read path. */
 export const MEMORY_RECORD_NOT_FOUND = "MEMORY_RECORD_NOT_FOUND";
+
+/** Search/list input violated capture policy (blank, control characters, over-limit, invalid limit). */
+export const MEMORY_SEARCH_INPUT_REJECTED = "MEMORY_SEARCH_INPUT_REJECTED";
 
 /** A supersede target record identity was not found. */
 export const MEMORY_TARGET_NOT_FOUND = "MEMORY_TARGET_NOT_FOUND";

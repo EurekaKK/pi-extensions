@@ -8,6 +8,7 @@ import { MemoryWriteAuthority } from "./authority.js";
 import { type FileMutationQueue, initializeMemoryConfig, type MemoryConfigV1 } from "./config.js";
 import { MEMORY_STATUS_COMMAND } from "./constants.js";
 import { registerMemoryReadCommand, registerMemoryReadTool } from "./read.js";
+import { registerMemoryListCommand, registerMemorySearchCommand, registerMemorySearchTool } from "./search.js";
 import { MemoryService } from "./service.js";
 import { buildMemoryStatusReport, renderMemoryStatusFailure } from "./status.js";
 import type { MemoryStoreFs } from "./store-io.js";
@@ -35,11 +36,13 @@ function notify(context: ExtensionContext, message: string, type: "info" | "warn
 }
 
 /**
- * Register the full #7 + #8 surface: foreground `memory_write` (add and
+ * Register the #7 + #8 + #9 surface: foreground `memory_write` (add and
  * auditable supersede), exact `memory_read` plus the `memory-read` command,
- * and the read-only diagnostics command. All share one Store service bounded
- * by the SAME withFileMutationQueue transaction; concurrent writes therefore
- * serialize and a supersede against one target commits exactly once.
+ * bounded ranked `memory_search` plus the `memory-search` and `memory-list`
+ * commands, and the read-only diagnostics command. All Store behavior shares
+ * ONE validated Store service; every write is bounded by the SAME
+ * withFileMutationQueue transaction, and search/list/read exercise read-only
+ * paths with no write authority.
  */
 export function registerMemoryExtension(
 	pi: ExtensionAPI,
@@ -56,6 +59,9 @@ export function registerMemoryExtension(
 	registerMemoryWriteTool(pi, { service, authority });
 	registerMemoryReadTool(pi, service);
 	registerMemoryReadCommand(pi, service);
+	registerMemorySearchTool(pi, { service, charBudget: config.recall.maxChars });
+	registerMemorySearchCommand(pi, { service, charBudget: config.recall.maxChars });
+	registerMemoryListCommand(pi, { service, charBudget: config.recall.maxChars });
 
 	pi.registerCommand(MEMORY_STATUS_COMMAND, {
 		description:
