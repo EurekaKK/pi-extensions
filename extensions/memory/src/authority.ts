@@ -8,6 +8,11 @@ export type MemoryWriteAuthorityResult =
 	| { readonly kind: "granted" }
 	| { readonly kind: "denied"; readonly reason: MemoryWriteDenialReason };
 
+/** Forget authority never consults the proactiveWrites switch, so that denial reason cannot occur. */
+export type MemoryForgetAuthorityResult =
+	| { readonly kind: "granted" }
+	| { readonly kind: "denied"; readonly reason: "no-direct-human-turn" | "subagent-context" };
+
 /**
  * `subagent:descriptor` durable check at write time.
  *
@@ -29,14 +34,17 @@ export function hasSubagentDescriptor(context: ExtensionContext): boolean {
 }
 
 /**
- * Foreground write authority.
+ * Foreground write/forget authority.
  *
- * A direct human `interactive` or `rpc` input grants write authority for the
- * turn; authority resets fail-closed at `agent_settled`, `session_start`,
+ * A direct human `interactive` or `rpc` input grants authority for the turn;
+ * authority resets fail-closed at `agent_settled`, `session_start`,
  * `session_tree`, and `session_shutdown`, so extension-originated follow-up
  * turns and later lifecycle phases start denied. Config denial
  * (`proactiveWrites: false`) and a durable `subagent:descriptor` on the branch
- * deny writes independently of turn state.
+ * deny writes independently of turn state. Physical Forget shares the same
+ * direct-human turn gate but is an explicit destructive user request, so it
+ * ignores the `proactiveWrites` switch (which only governs proactive model
+ * writes) while still denying subagent context and non-direct turns.
  */
 export class MemoryWriteAuthority {
 	readonly #pi: ExtensionAPI;
@@ -57,6 +65,17 @@ export class MemoryWriteAuthority {
 
 	check(context: ExtensionContext): MemoryWriteAuthorityResult {
 		if (!this.#config.proactiveWrites) return { kind: "denied", reason: "proactive-writes-disabled" };
+		if (hasSubagentDescriptor(context)) return { kind: "denied", reason: "subagent-context" };
+		if (!this.#directHumanTurn) return { kind: "denied", reason: "no-direct-human-turn" };
+		return { kind: "granted" };
+	}
+
+	/**
+	 * Physical Forget authority: the same direct interactive/rpc foreground
+	 * human turn gate as writes, minus the proactiveWrites switch. Forget is
+	 * never proactive — the direct human turn itself is the explicit request.
+	 */
+	checkForget(context: ExtensionContext): MemoryForgetAuthorityResult {
 		if (hasSubagentDescriptor(context)) return { kind: "denied", reason: "subagent-context" };
 		if (!this.#directHumanTurn) return { kind: "denied", reason: "no-direct-human-turn" };
 		return { kind: "granted" };

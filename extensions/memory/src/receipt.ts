@@ -1,7 +1,15 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Text, truncateToWidth } from "@earendil-works/pi-tui";
-import type { MemoryReadOutcome, MemoryWriteOutcome } from "./service.js";
+import type { MemoryForgetOutcome, MemoryReadOutcome, MemoryWriteOutcome } from "./service.js";
 import type { MemoryRecordV1 } from "./store.js";
+
+/**
+ * Honest Store-scoped deletion caveat carried by every Physical Forget
+ * receipt. It names every copy class this extension cannot erase so the
+ * deletion guarantee is never overstated.
+ */
+export const MEMORY_FORGET_CAVEAT =
+	"Forgetting removes the records from this Directory Memory Store only. Existing Pi sessions, backups, provider logs, filesystem snapshots, previously published documentation, and Git history are outside the Store's deletion guarantee and may still contain the removed content.";
 
 /** Stable structured receipt for every successful `memory_write` call. */
 export interface MemoryWriteReceiptV1 {
@@ -51,6 +59,66 @@ export function makeWriteReceipt(outcome: MemoryWriteOutcome, operation: "add" |
 		previousStoreRevision: outcome.previousStoreRevision,
 		...(outcome.ignoreMarker === null ? {} : { ignoreMarker: outcome.ignoreMarker }),
 	};
+}
+
+/**
+ * Stable structured receipt for every successful `memory_forget` call.
+ *
+ * Deliberately minimal: it identifies only the removed chain members
+ * (id/revision/state), counts, outcome, and Store revision. It never
+ * reproduces summary, content, or provenance of the deleted private data and
+ * always carries the honest deletion caveat.
+ */
+export interface MemoryForgetReceiptV1 {
+	readonly kind: "memory:forget-receipt";
+	readonly version: 1;
+	readonly outcome: "forgotten";
+	/** Only removed identities, root-to-leaf chain order; no content-bearing fields. */
+	readonly removed: readonly {
+		readonly id: string;
+		readonly revision: number;
+		readonly state: "active" | "superseded";
+	}[];
+	/** Number of removed chain members (`removed.length`). */
+	readonly count: number;
+	readonly previousStoreRevision: number;
+	readonly storeRevision: number;
+	readonly ignoreMarker?: "created" | "preserved";
+	/** Honest Store-scoped deletion caveat (see `MEMORY_FORGET_CAVEAT`). */
+	readonly caveat: string;
+}
+
+export function makeForgetReceipt(outcome: MemoryForgetOutcome): MemoryForgetReceiptV1 {
+	return {
+		kind: "memory:forget-receipt",
+		version: 1,
+		outcome: "forgotten",
+		removed: outcome.removed,
+		count: outcome.removed.length,
+		previousStoreRevision: outcome.previousStoreRevision,
+		storeRevision: outcome.storeRevision,
+		...(outcome.ignoreMarker === null ? {} : { ignoreMarker: outcome.ignoreMarker }),
+		caveat: MEMORY_FORGET_CAVEAT,
+	};
+}
+
+/**
+ * Model-visible forget receipt text. Identifies the removed chain members and
+ * always ends with the deletion caveat; deleted content never appears.
+ */
+export function renderForgetReceiptText(receipt: MemoryForgetReceiptV1): string {
+	const noun = receipt.count === 1 ? "record" : "records";
+	const lines = [
+		`memory_forget · forgotten (Store revision ${receipt.previousStoreRevision} → ${receipt.storeRevision})`,
+		"",
+		`Removed the complete connected supersession chain: ${receipt.count} ${noun}`,
+		...receipt.removed.map(
+			(record, index) => `${index + 1}. ${record.id} (revision ${record.revision} · ${record.state})`,
+		),
+		"",
+		receipt.caveat,
+	];
+	return lines.join("\n");
 }
 
 /** Stable structured result for every successful `memory_read` call. */
@@ -182,7 +250,7 @@ function renderToolResult(
 	return new BoundedLinesComponent(raw.split("\n", 4).map((line) => theme.fg("success", line)));
 }
 
-/** Compact fallback renderer shared by `memory_write` and `memory_read`. */
+/** Compact fallback renderer shared by `memory_write`, `memory_read`, and `memory_forget`. */
 export function renderMemoryToolResult(
 	result: {
 		readonly content: readonly { readonly type: string; readonly text?: string }[];

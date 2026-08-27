@@ -17,6 +17,9 @@ export const MEMORY_READ_COMMAND = "memory-read";
 /** LLM tool that adds one verified Memory Record from the primary foreground Agent. */
 export const MEMORY_WRITE_TOOL = "memory_write";
 
+/** LLM tool that physically forgets one complete supersession chain under direct human authority. */
+export const MEMORY_FORGET_TOOL = "memory_forget";
+
 /** LLM tool that reads one exact Memory Record by identity. */
 export const MEMORY_READ_TOOL = "memory_read";
 
@@ -28,6 +31,9 @@ export const MEMORY_SEARCH_COMMAND = "memory-search";
 
 /** User command that lists the active Memory Records (read-only, bounded). */
 export const MEMORY_LIST_COMMAND = "memory-list";
+
+/** User command that physically forgets one complete supersession chain (direct user authority). */
+export const MEMORY_FORGET_COMMAND = "memory-forget";
 
 /**
  * Directory Memory Store locations are scoped inside the Working Directory's
@@ -87,6 +93,9 @@ export const MEMORY_ABORTED = "MEMORY_ABORTED";
 /** Proactive writes were not authorized (no direct human turn, subagent context, or config). */
 export const MEMORY_WRITE_DENIED = "MEMORY_WRITE_DENIED";
 
+/** Physical Forget was not authorized (no direct human turn or subagent context). */
+export const MEMORY_FORGET_DENIED = "MEMORY_FORGET_DENIED";
+
 /** A Store commit failed; the prior Store remains authoritative. */
 export const MEMORY_WRITE_FAILED = "MEMORY_WRITE_FAILED";
 
@@ -95,6 +104,12 @@ export const MEMORY_INPUT_REJECTED = "MEMORY_INPUT_REJECTED";
 
 /** An exact record was not found by the read path. */
 export const MEMORY_RECORD_NOT_FOUND = "MEMORY_RECORD_NOT_FOUND";
+
+/** A forget target record identity is missing or already absent from the Store. */
+export const MEMORY_FORGET_TARGET_NOT_FOUND = "MEMORY_FORGET_TARGET_NOT_FOUND";
+
+/** A forget target id exists but the requested exact revision does not match its stored revision. */
+export const MEMORY_FORGET_TARGET_STALE = "MEMORY_FORGET_TARGET_STALE";
 
 /** Search/list input violated capture policy (blank, control characters, over-limit, invalid limit). */
 export const MEMORY_SEARCH_INPUT_REJECTED = "MEMORY_SEARCH_INPUT_REJECTED";

@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { FileMutationQueue, MemoryConfigV1 } from "./config.js";
 import {
+	MEMORY_FORGET_TARGET_NOT_FOUND,
+	MEMORY_FORGET_TARGET_STALE,
 	MEMORY_IDENTITY_COLLISION,
 	MEMORY_INPUT_REJECTED,
 	MEMORY_PRIMARY_AGENT_AUTHOR,
@@ -96,6 +98,30 @@ export interface MemoryReadInput {
 }
 
 export type MemoryReadOutcome = { readonly kind: "found"; readonly record: MemoryRecordV1 };
+
+/** Physical Forget input: an exact record identity plus an optional exact revision. */
+export interface MemoryForgetInput {
+	readonly id: string;
+	readonly revision?: number;
+}
+
+/**
+ * Successful Physical Forget outcome. Only removed identities are reported
+ * (id/revision/state) — never content, summary, or provenance, and nothing
+ * about the removed private data stays behind in the Store or the receipt.
+ */
+export interface MemoryForgetOutcome {
+	readonly kind: "forgotten";
+	/** Every removed supersession chain member in root-to-leaf order. */
+	readonly removed: readonly {
+		readonly id: string;
+		readonly revision: number;
+		readonly state: "active" | "superseded";
+	}[];
+	readonly previousStoreRevision: number;
+	readonly storeRevision: number;
+	readonly ignoreMarker: IgnoreMarkerState | null;
+}
 
 /** Bounded lexical search input; `limit` is capped by the configured recall budget. */
 export interface MemorySearchInput {
@@ -346,6 +372,58 @@ function resolveRecordLimit(
 }
 
 /**
+ * Resolve the complete connected supersession chain containing an exact target.
+ *
+ * Physical Forget addresses one record identity (optionally with the exact
+ * revision); because every supersession graph is validated acyclic with at most
+ * one successor per target, the connected component is one linear chain. The
+ * chain is walked in both directions — ancestors through `supersedes` links
+ * and successors through the successor map — so addressing an active or a
+ * historical member resolves the identical full chain. Missing identities and
+ * exact revision mismatches fail closed with their own stable codes before any
+ * filesystem mutation.
+ */
+function resolveForgetChain(
+	records: readonly MemoryRecordV1[],
+	targetId: string,
+	targetRevision: number | undefined,
+): readonly MemoryRecordV1[] {
+	const byId = new Map(records.map((record) => [record.id, record]));
+	const target = byId.get(targetId);
+	if (target === undefined) {
+		throw new MemoryError(MEMORY_FORGET_TARGET_NOT_FOUND, `memory forget target "${targetId}" was not found`);
+	}
+	if (targetRevision !== undefined && target.revision !== targetRevision) {
+		throw new MemoryError(
+			MEMORY_FORGET_TARGET_STALE,
+			`memory forget target "${targetId}" is at revision ${target.revision}, not ${targetRevision}`,
+		);
+	}
+
+	const successor = new Map<string, MemoryRecordV1>();
+	for (const record of records) {
+		if (record.supersedes !== null) successor.set(record.supersedes.id, record);
+	}
+
+	// Ancestors: walk `supersedes` links from the target toward the root.
+	const ancestors: MemoryRecordV1[] = [];
+	let current = target.supersedes === null ? undefined : byId.get(target.supersedes.id);
+	while (current !== undefined) {
+		ancestors.push(current);
+		current = current.supersedes === null ? undefined : byId.get(current.supersedes.id);
+	}
+	// Successors: walk forward from the target toward the leaf.
+	const successors: MemoryRecordV1[] = [];
+	current = successor.get(target.id);
+	while (current !== undefined) {
+		successors.push(current);
+		current = successor.get(current.id);
+	}
+
+	return [...ancestors.reverse(), target, ...successors];
+}
+
+/**
  * Resolve and validate the exact active supersession target. Missing targets,
  * stale revisions, and already-superseded targets fail closed with their own
  * stable codes; the caller runs this before any filesystem mutation.
@@ -530,6 +608,89 @@ export class MemoryService {
 			return {
 				kind: "added",
 				record,
+				previousStoreRevision: store.revision,
+				storeRevision: nextStore.revision,
+				ignoreMarker,
+			};
+		});
+	}
+
+	/**
+	 * Single Physical Forget transaction behind both `memory_forget` and the
+	 * `memory-forget` command. Runs inside the SAME queued read–validate–
+	 * atomic-write transaction as add/supersede, resolves the complete
+	 * connected supersession chain in both directions, and removes every chain
+	 * member in one commit. A missing or already-absent identity fails closed
+	 * with a stable not-found code and zero byte/revision mutation; exact
+	 * revision mismatches are ambiguous and also fail closed.
+	 */
+	async forget(
+		context: ExtensionContext,
+		input: MemoryForgetInput,
+		signal?: AbortSignal,
+	): Promise<MemoryForgetOutcome> {
+		const targetId = input.id.trim();
+		if (targetId.length === 0 || hasRejectedControlCharacters(input.id)) {
+			throw new MemoryError(
+				MEMORY_INPUT_REJECTED,
+				"memory forget id must be a non-empty record identity without control characters",
+			);
+		}
+		if (input.revision !== undefined && (!Number.isSafeInteger(input.revision) || input.revision < 1)) {
+			throw new MemoryError(MEMORY_INPUT_REJECTED, "memory forget revision must be a positive safe integer");
+		}
+
+		const identity = await resolveDirectoryIdentity(context.cwd);
+		const storePath = getMemoryStorePath(identity);
+		const storeDir = getMemoryStoreDirectory(identity);
+
+		return this.#withFileMutationQueue(storePath, async () => {
+			const classification = await classifyMemoryStore({
+				storePath,
+				limits: this.#config.store,
+				...(signal === undefined ? {} : { signal }),
+			});
+			if (classification.kind === "missing") {
+				throw new MemoryError(
+					MEMORY_FORGET_TARGET_NOT_FOUND,
+					`memory forget target "${targetId}" was not found (no memory store exists yet)`,
+				);
+			}
+			if (classification.kind !== "healthy") {
+				throw storeFailureError(classification);
+			}
+			const store = classification.store;
+
+			// Resolve the full chain BEFORE any filesystem mutation, so missing,
+			// stale, and unhealthy Stores leave the directory byte-for-byte untouched.
+			const chain = resolveForgetChain(store.records, targetId, input.revision);
+
+			await ensureMemoryStoreDirectory(this.#fs, storeDir, signal);
+			await ensureMemoryStoreFileMode(this.#fs, storePath, signal);
+			const ignoreMarker: IgnoreMarkerState = await ensureScopedIgnoreMarker(this.#fs, storeDir, signal);
+
+			const removedIds = new Set(chain.map((record) => record.id));
+			const nextStore: MemoryStoreV1 = Object.freeze({
+				version: MEMORY_STORE_VERSION,
+				schema: MEMORY_STORE_SCHEMA,
+				revision: store.revision + 1,
+				directory: Object.freeze({ id: identity }),
+				// No content-bearing tombstone: every chain member is removed from the
+				// committed document; unrelated chains survive byte-for-byte.
+				records: Object.freeze(store.records.filter((record) => !removedIds.has(record.id))),
+			});
+			const text = serializeMemoryStoreDocument(nextStore, this.#config.store);
+			// Revalidate the exact serialized document before it is persisted.
+			validateMemoryStoreDocument(JSON.parse(text) as unknown, this.#config.store);
+			await atomicWriteStoreFile(this.#fs, storePath, text, signal);
+
+			return {
+				kind: "forgotten",
+				removed: chain.map((record) => ({
+					id: record.id,
+					revision: record.revision,
+					state: record.state,
+				})),
 				previousStoreRevision: store.revision,
 				storeRevision: nextStore.revision,
 				ignoreMarker,

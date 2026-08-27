@@ -229,7 +229,12 @@ describe("automatic recall capture at the input seam", () => {
 
 		await h.input("remember something");
 		expect(await h.recall()).toBeUndefined();
-		expect(h.host.tools.map((tool) => tool.name).sort()).toEqual(["memory_read", "memory_search", "memory_write"]);
+		expect(h.host.tools.map((tool) => tool.name).sort()).toEqual([
+			"memory_forget",
+			"memory_read",
+			"memory_search",
+			"memory_write",
+		]);
 	});
 });
 

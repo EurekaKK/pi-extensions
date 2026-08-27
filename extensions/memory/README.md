@@ -6,8 +6,10 @@
 本地词法搜索（`memory_search` / `memory-search`）与 active 记录列表（`memory-list`）：Agent 与用户先搜出紧凑结果，
 再用 `memory_read` 或 `memory-read` 命令精确读取完整记录（含显式指定 superseded revision）；#10 在每个合格的
 前台直接人类轮次前自动召回该目录的 active 记忆（`memory:recall-receipt` 自定义消息）；#11 让召回分支/压缩感知：
-当前分支模型可见上下文中已存在的未变记录指纹不再重复召回，离开 active context（含压缩后）可再次召回。
-`memory_forget`（物理遗忘）由后续 issue 提供，README 中标记为「尚未实现」。
+当前分支模型可见上下文中已存在的未变记录指纹不再重复召回，离开 active context（含压缩后）可再次召回；#12 提供
+`memory_forget`（物理遗忘）与 `memory-forget` 命令：在直接人类权威下把一整条逻辑 supersession 链（active 与
+历史所有成员）从 Store 内容中事务性移除，不留内容型 tombstone，并在收据中诚实声明 Store 之外的副本不在删除
+保证范围内。
 
 ## 状态
 
@@ -52,6 +54,25 @@ Store 格式、配置字段和命令输出仍可能调整。README 的完整版�
   两个源码隔离 extension 之间的持久 session protocol，未形成安装依赖，任一侧改名时必须同步更新并回归测试；
   `proactiveWrites: false` 配置直接拒绝写入。`memory_read`、`memory_search`、`memory-search` 与
   `memory-list` 不做权限检查，任何来源（含 subagent）都可搜索与读取。
+- **物理遗忘（#12）**：`memory_forget` 工具与 `/memory-forget` 命令是同一个 `MemoryService.forget` 事务上的
+  两个适配器，不定义任何替代删除语义。工具要求与写入相同的直接 `interactive`/`rpc` 前台人类轮次权威（subagent
+  descriptor、extension source input、extension custom follow-up、Goal 轮次与无人值守/纯模型轮次都拒绝），
+  但**忽略** `proactiveWrites` 开关——遗忘从来不是主动行为，直接人类轮次本身就是显式请求；`/memory-forget`
+  命令的调用本身就是直接显式用户权威（用户在 TUI 中输入命令），因此不经过模型轮次门，但 durable subagent
+  descriptor 仍会 fail-closed 拒绝命令。用户命令与工具都需要精确
+  `id`（可选精确 `revision`）。链解析在同一个 `withFileMutationQueue` 队列事务内：先沿 `supersedes` 引用向
+  祖先方向、再沿 successor 关系向叶子方向走完整条连接链，因此寻址 active 或历史任一成员都移除**完全相同**的
+  整条链（root→leaf 全部记录、无内容型 tombstone），Store revision 只递增一次，无关链记录逐字段保留；提交沿用
+  独占临时文件 + sync + 原子 rename、目录/文件 owner-only 权限收紧与作用域 ignore 标记维护（缺失时创建、已有
+  用户标记保留），并把 Store 目录元数据刷新为当前规范 Directory Identity。缺失/已移除的 identity 返回稳定的
+  `MEMORY_FORGET_TARGET_NOT_FOUND` 且零字节/零 revision 变更；id 存在但精确 revision 不匹配视为歧义，返回
+  `MEMORY_FORGET_TARGET_STALE` 同样 fail-closed。corrupt/unreadable/over-limit/unsupported/提交故障/取消
+  都保持先前 Store 字节权威；与 add/supersede/其他 forget 并发时由同一队列串行化，无部分链或丢失更新。
+  成功提交后 `memory_read` 与 `memory_search` 立即找不到任何被移除成员（无进程内索引/缓存）。收据（
+  `memory:forget-receipt`）只标识被移除的 id/revision/state 与 count/outcome/前后 Store revision，绝不复制
+  summary/content/provenance/隐私数据，并**始终**携带诚实声明：Pi sessions、backups、provider logs、
+  filesystem snapshots、previously published documentation 与 Git history 都不在 Store 删除保证范围内。模型
+  可见文本与命令反馈包含同一声明。工具指导语明确：`memory_forget` 只用于用户显式遗忘意图，绝不用于主动清理。
 - **有界确定性搜索（#9）**：`memory_search` 只检索 active 记录；superseded 记录永不进入搜索结果，但
   `memory_read` 仍可按精确 id（+revision）读取历史。排序完全由模型无关的纯词法相关性决定：查询与记录先做
   NFKC 兼容归一化 + 小写折叠，Unicode 拉丁字母（含组合标记）与数字连续段为词元，任意其他字符（含标点、
@@ -114,7 +135,7 @@ Store 格式、配置字段和命令输出仍可能调整。README 的完整版�
 
 ## 尚未实现
 
-- `memory_forget`（物理遗忘，需直接人类权威）。
+- 无（本阶段 #7–#12 均已落地）。后续 issue 可能引入 Store 格式迁移、语义检索或正式文档（#13）。
 
 ## 安装、启用与卸载
 
@@ -193,11 +214,13 @@ vendor；`@earendil-works/pi-ai`、`@earendil-works/pi-tui`、`typebox` 与 `@ea
 
 当前注册：
 
-- LLM 工具 `memory_write`（add / supersede；仅 primary 前台 Agent）、`memory_read`（精确读取，无权限限制）、
+- LLM 工具 `memory_write`（add / supersede；仅 primary 前台 Agent）、`memory_forget`（物理遗忘一整条
+  supersession 链；仅直接人类轮次，不受 `proactiveWrites` 限制）、`memory_read`（精确读取，无权限限制）、
   `memory_search`（有界词法搜索，无权限限制）。
 - 用户命令 `memory-status`（只读诊断）、`memory-read <record-id> [<revision>]`（精确读取的便捷命令）、
-  `memory-search <query...> [--limit <n>]` 与 `memory-list [<limit>]`（搜索与 active 列表的便捷命令，复用
-  同一只读 Store 逻辑，无独立语义）。
+  `memory-search <query...> [--limit <n>]`、`memory-list [<limit>]`（搜索与 active 列表的便捷命令，复用
+  同一只读 Store 逻辑，无独立语义）与 `memory-forget <record-id> [<revision>]`（同一遗忘事务的命令适配器，
+  命令调用本身就是直接显式用户权威）。
 - 自定义消息类型 `memory:recall-receipt`：每个合格直接人类轮次在 `before_agent_start` 注入（`display: true`），
   结构化 details 为 v1 Recall Receipt；同一类型注册紧凑/展开两种 TUI 消息渲染器，RPC/JSON/print 模式不等待 UI。
 
@@ -249,6 +272,35 @@ memory_read(id="memory-<hex>")
 ```
 
 - 未找到时工具与命令都报告稳定错误码 `MEMORY_RECORD_NOT_FOUND`（命令输出 `... was not found`）。
+
+物理遗忘（仅直接人类权威）：
+
+```text
+memory_forget(id="memory-<hex>")
+/memory-forget memory-<hex>
+/memory-forget memory-<hex> 1
+```
+
+- `id` 寻址链上任意成员（active 或 superseded），可选 `revision` 必须精确匹配，否则 `MEMORY_FORGET_TARGET_STALE`。
+  成功时移除整条连接 supersession 链（所有新旧成员），Store revision 只递增一次。收据示例：
+
+  ```text
+  memory_forget · forgotten (Store revision 3 → 4)
+
+  Removed the complete connected supersession chain: 3 records
+  1. memory-<hex-a> (revision 1 · superseded)
+  2. memory-<hex-b> (revision 2 · superseded)
+  3. memory-<hex-c> (revision 3 · active)
+
+  Forgetting removes the records from this Directory Memory Store only. Existing
+  Pi sessions, backups, provider logs, filesystem snapshots, previously published
+  documentation, and Git history are outside the Store's deletion guarantee and
+  may still contain the removed content.
+  ```
+
+- 缺失/已移除的 identity 返回稳定错误码 `MEMORY_FORGET_TARGET_NOT_FOUND` 且字节/revision 不变；未授权
+  （subagent、extension follow-up、无人值守轮次）返回 `MEMORY_FORGET_DENIED`。收据与命令反馈永远不包含被删除
+  的 content/summary/provenance。
 
 搜索与列表：
 
@@ -316,7 +368,8 @@ The monorepo is managed with npm workspaces; never mix pnpm or Yarn.
 
 ## 限制
 
-- 本版本有自动召回与分支/压缩感知的可见指纹去重（#11），但无物理遗忘；`memory_write` 支持 `operation: "add"` 与 `"supersede"`。
+- 本版本有自动召回与分支/压缩感知的可见指纹去重（#11）与直接人类权威的物理遗忘（#12）；`memory_write` 支持
+  `operation: "add"` 与 `"supersede"`。
 - 去重以稳定指纹为准：展示文本、其他 extension 的自定义消息与普通 custom entry 都不会被当作可见召回；
   details 损坏的收据会被忽略（可能重复召回，不会抑制召回）。
 - 搜索是纯词法（大小写/标点折叠、拉丁与数字词元、中文重叠 bigram + 单字词元、摘要加权），不是语义检索；
@@ -340,7 +393,9 @@ The monorepo is managed with npm workspaces; never mix pnpm or Yarn.
 - 首次写入创建 `.pi/memory/`（0700）、作用域 `.gitignore` 标记（已有用户标记时保留）与 `store.json`
   （0600）；权限在支持 POSIX 模式的平台生效。
 - 每次写入都是 Pi `withFileMutationQueue` 包住的完整事务：读取—校验—变更—独占临时文件 + sync +
-  原子 rename；失败或取消时先前 Store 字节权威，临时文件被清理。
+  原子 rename；失败或取消时先前 Store 字节权威，临时文件被清理。`memory_forget` 与 `memory-forget` 使用同一个
+  队列事务与同一原子提交路径，只额外移除整条链记录（无 tombstone），并同样刷新 owner-only 权限与作用域 ignore 标记。
+  遗忘绝不修改 Pi session 历史、备份、provider 数据、项目文档、Git 提交或 Global User Instructions。
 - `memory-status` 严格只读；Git 诊断只执行只读命令（`rev-parse`、`ls-files`、`check-ignore`），带超时与
   取消，不修改仓库配置。
 
@@ -357,7 +412,7 @@ The monorepo is managed with npm workspaces; never mix pnpm or Yarn.
 
 - TUI：工具结果由紧凑（单行调用 + 数行结果）与展开（完整文本）两种渲染器呈现；`memory-search`/`memory-list`
   命令通过 notify 展示紧凑结果；`memory:recall-receipt` 消息注册紧凑（标题 + 首个入选记录行）与展开（完整
-  文本）两种消息渲染器。
+  文本）两种消息渲染器；`memory_forget`/`memory-forget` 的紧凑与展开渲染同样不展示被删除内容。
 - RPC：与 TUI 相同的 Store 契约；`memory_search` 结果经结构化 details（`memory:search-result`，含
   `matchedCount`/`omittedCount`/`truncatedCount` 与紧凑 hits）与文本 content 返回；自动召回同样返回结构化
   v1 Recall Receipt details，不等待任何终端 UI。
