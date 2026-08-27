@@ -15,8 +15,9 @@ import {
 	resolvePackageClosure,
 	topoSort,
 	findCycles,
+	buildPlan,
 } from "../install-plan.mjs";
-import { makeTempDir, makeFixtureRepo, PLAN_MODULE } from "./helpers.mjs";
+import { makeTempDir, makeFixtureRepo, PLAN_MODULE, REPO_ROOT } from "./helpers.mjs";
 
 const manifest = (fields = {}) => ({ name: "x", ...fields });
 
@@ -371,4 +372,24 @@ test("readManifest 对损坏 JSON 返回 null", (t) => {
 	fs.writeFileSync(file, JSON.stringify({ name: "x" }));
 	assert.deepEqual(readManifest(file), { name: "x" });
 	assert.equal(readManifest(path.join(dir, "absent.json")), null);
+});
+
+// 仓库级回归：真实仓库中 memory 的安装闭包。只读仓库 manifest + 临时 agent 目录，
+// 不触碰真实 ~/.pi，也不写入任何文件。
+test("仓库级：memory 安装闭包 vendor config-store 且无兄弟 extension 依赖", (t) => {
+	const agent = path.join(makeTempDir(t), "agent");
+	const res = buildPlan({ repoRoot: REPO_ROOT, agentDir: agent, requested: ["memory"] });
+	assert.equal(res.ok, true, res.errors.join("\n"));
+	// 唯一安装根：memory 不声明 piExtensionDependencies，计划不得包含任何兄弟 extension。
+	assert.deepEqual(
+		res.plan.map((e) => e.name),
+		["memory"],
+	);
+	const memory = res.plan[0];
+	assert.equal(memory.root, true);
+	assert.deepEqual(memory.extensionDeps, []);
+	// 内部 package 代码依赖只 vendor config-store（依赖优先、平铺去重后的闭包）。
+	assert.deepEqual(memory.packages, ["config-store"]);
+	// 目标路径落在我-extensions 副本，由脚本执行镜像。
+	assert.equal(memory.dest, path.join(agent, "my-extensions", "memory"));
 });
