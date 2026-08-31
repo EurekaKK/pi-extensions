@@ -77,7 +77,7 @@ describe("Todo v2 domain", () => {
 		expect(normalizeTodoItems(parallel, true)).toHaveLength(2);
 	});
 
-	it("creates immutable version 2 snapshots", () => {
+	it("creates immutable version 3 snapshots", () => {
 		const snapshot = createTodoSnapshot([{ content: "work", status: "pending" }]);
 		expect(snapshot.version).toBe(TODO_SNAPSHOT_VERSION);
 		expect(Object.isFrozen(snapshot)).toBe(true);
@@ -85,12 +85,24 @@ describe("Todo v2 domain", () => {
 		expect(Object.isFrozen(snapshot.todos[0])).toBe(true);
 	});
 
-	it("parses a valid v2 snapshot", () => {
+	it("parses valid v2 and v3 snapshots", () => {
 		const result = parseTodoSnapshot({
 			version: 2,
 			todos: [{ content: "work", status: "completed" }],
 		});
 		expect(result).toMatchObject({ status: "valid" });
+		expect(
+			parseTodoSnapshot({
+				version: 3,
+				todos: [
+					{
+						content: "work",
+						status: "pending",
+						source: { kind: "plan-step", ref: { planId: "p", planRevision: 1, stepId: "s" } },
+					},
+				],
+			}),
+		).toMatchObject({ status: "valid" });
 	});
 
 	it("ignores version 1 data without treating it as corruption", () => {
@@ -122,5 +134,16 @@ describe("Todo v2 domain", () => {
 		],
 	])("marks malformed v2 data invalid", (value) => {
 		expect(parseTodoSnapshot(value)).toEqual({ status: "invalid" });
+	});
+
+	it("marks malformed v3 snapshots invalid", () => {
+		expect(
+			parseTodoSnapshot({ version: 3, todos: [{ content: "x", status: "pending", source: { kind: "nope" } }] }),
+		).toEqual({
+			status: "invalid",
+		});
+		expect(
+			parseTodoSnapshot({ version: 3, todos: [{ content: "a", status: "pending" }], handoffOrigin: { handoffId: "" } }),
+		).toEqual({ status: "invalid" });
 	});
 });

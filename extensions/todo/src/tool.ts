@@ -51,8 +51,8 @@ export const TodoParametersSchema = Type.Object(
 
 export type TodoParameters = Static<typeof TodoParametersSchema>;
 
-export interface TodoWriteDetailsV1 {
-	readonly version: 1;
+export interface TodoWriteDetailsV2 {
+	readonly version: 2;
 	readonly todos: readonly TodoItem[];
 	readonly counts: TodoCounts;
 }
@@ -61,6 +61,7 @@ export interface TodoToolRuntime {
 	readonly allowParallelInProgress: boolean;
 	readonly persist: (todos: readonly TodoItem[]) => void;
 	readonly show: (todos: readonly TodoItem[], context: ExtensionContext) => void;
+	readonly preserveSources: (submitted: readonly TodoItem[], context: ExtensionContext) => readonly TodoItem[];
 }
 
 export function describeTodoWrite(allowParallelInProgress: boolean): string {
@@ -87,10 +88,13 @@ export function createTodoToolDefinition(runtime: TodoToolRuntime) {
 			if (signal?.aborted) throw new Error("Operation aborted");
 			const submitted = normalizeTodoItems(parameters.todos, runtime.allowParallelInProgress);
 			const settled = isFullyCompleted(submitted);
+			// 全 completed 列表退休计划时无需保留 source；其余情况按 content
+			// 一致保留已持久化的 Plan Step source。
+			const withSources = settled ? submitted : runtime.preserveSources(submitted, context);
 			// A fully completed list retires the plan: persist and project the
 			// empty state so the widget clears without relying on the model to
 			// send a follow-up empty-list call.
-			const todos = settled ? EMPTY_TODOS : submitted;
+			const todos = settled ? EMPTY_TODOS : withSources;
 			runtime.persist(todos);
 			runtime.show(todos, context);
 			const counts = countTodos(todos);
@@ -102,13 +106,12 @@ export function createTodoToolDefinition(runtime: TodoToolRuntime) {
 					},
 				],
 				details: {
-					version: 1,
+					version: 2,
 					todos: [...todos],
 					counts,
-				} satisfies TodoWriteDetailsV1,
-			} satisfies AgentToolResult<TodoWriteDetailsV1>);
+				} satisfies TodoWriteDetailsV2,
+			} satisfies AgentToolResult<TodoWriteDetailsV2>);
 		},
-
 		renderCall(args, theme) {
 			const count = Array.isArray(args.todos) ? args.todos.length : 0;
 			return new Text(

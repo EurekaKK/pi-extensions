@@ -1,13 +1,15 @@
-import { TODO_SNAPSHOT_VERSION } from "./constants.js";
+import { createTodoSnapshotV3, foldTodoSnapshots, normalizeTodoList, type TodoItemV3 } from "todo-protocol";
 
-export const TODO_STATUSES = ["pending", "in_progress", "completed"] as const;
+export type { TodoSnapshotParseResult } from "todo-protocol";
+export {
+	parseTodoSnapshot,
+	TODO_STATUSES,
+	type TodoItemV3,
+	type TodoSourceV1,
+	type TodoStatus,
+} from "todo-protocol";
 
-export type TodoStatus = (typeof TODO_STATUSES)[number];
-
-export interface TodoItem {
-	readonly content: string;
-	readonly status: TodoStatus;
-}
+export type TodoItem = TodoItemV3;
 
 export interface TodoCounts {
 	readonly pending: number;
@@ -15,93 +17,56 @@ export interface TodoCounts {
 	readonly completed: number;
 }
 
-export interface TodoSnapshotV2 {
-	readonly version: 2;
-	readonly todos: readonly TodoItem[];
-}
-
-export type TodoSnapshotParseResult =
-	| { readonly status: "valid"; readonly todos: readonly TodoItem[] }
-	| { readonly status: "ignored" }
-	| { readonly status: "invalid" };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-	const prototype = Object.getPrototypeOf(value);
-	return prototype === Object.prototype || prototype === null;
-}
-
-function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
-	const actual = Object.keys(value).sort();
-	const keys = [...expected].sort();
-	return (
-		Object.getOwnPropertySymbols(value).length === 0 &&
-		actual.length === keys.length &&
-		actual.every((key, index) => key === keys[index])
-	);
-}
-
-function isTodoStatus(value: unknown): value is TodoStatus {
-	return typeof value === "string" && TODO_STATUSES.some((status) => status === value);
-}
-
-function freezeTodoItem(item: TodoItem): TodoItem {
-	return Object.freeze({ content: item.content, status: item.status });
-}
-
 /**
- * Validate one todo_write payload and build the canonical persisted list.
- *
- * Schema validation has already rejected unknown keys and invalid enum values.
- * This boundary still re-checks the domain invariants so the function is safe
- * for direct unit testing, then trims content and enforces the deployment's
- * in-progress policy.
+ * 校验一个 todo_write payload 并构造规范化列表。schema 已拒绝未知字段与非法
+ * 枚举；此处复核领域不变量并执行部署级并行策略。
  */
 export function normalizeTodoItems(raw: readonly unknown[], allowParallelInProgress: boolean): readonly TodoItem[] {
-	const todos: TodoItem[] = [];
-	const seen = new Set<string>();
+	const todos = normalizeTodoList(raw);
 	let active = 0;
-
-	for (const candidate of raw) {
-		if (!isRecord(candidate)) {
-			throw new Error("invalid todo: `content` must be a non-empty string");
-		}
-		const { content, status } = candidate;
-		if (typeof content !== "string" || !isTodoStatus(status)) {
-			throw new Error("invalid todo: `content` must be a non-empty string");
-		}
-		const trimmed = content.trim();
-		if (trimmed.length === 0) {
-			throw new Error("invalid todo: `content` must be a non-empty string");
-		}
-		if (seen.has(trimmed)) {
-			throw new Error(`invalid todos: duplicate content ${JSON.stringify(trimmed)}`);
-		}
-		seen.add(trimmed);
-		if (status === "in_progress") active += 1;
-		todos.push(freezeTodoItem({ content: trimmed, status }));
+	for (const todo of todos) {
+		if (todo.status === "in_progress") active += 1;
 	}
-
 	if (!allowParallelInProgress && active > 1) {
 		throw new Error(`invalid todos: at most one task may be in_progress (got ${active})`);
 	}
-
-	return Object.freeze(todos);
+	return todos;
 }
 
 /**
- * A non-empty list whose every item is completed is the plan's terminal
- * state: nothing remains to show or resume, so callers retire it.
+ * 在 content 完全一致时保留已持久化 Todo 的 Plan Step source；新内容或改写
+ * 内容成为无 source 的 unlinked Todo。
+ */
+export function preserveSources(
+	entries: readonly { readonly type: string; readonly customType?: string; readonly data?: unknown }[],
+	submitted: readonly TodoItem[],
+): readonly TodoItem[] {
+	const latest = foldTodoSnapshots(entries);
+	const sourcesByContent = new Map<string, TodoItem["source"]>();
+	for (const todo of latest.todos) {
+		if (todo.source !== undefined) sourcesByContent.set(todo.content, todo.source);
+	}
+	return Object.freeze(
+		submitted.map((todo) => {
+			const source = sourcesByContent.get(todo.content);
+			return Object.freeze(
+				source === undefined
+					? { content: todo.content, status: todo.status }
+					: { content: todo.content, status: todo.status, source },
+			);
+		}),
+	);
+}
+
+/**
+ * 非空且全部 completed 的列表是计划终态：调用方按空列表落盘并清除 widget。
  */
 export function isFullyCompleted(todos: readonly TodoItem[]): boolean {
 	return todos.length > 0 && todos.every((todo) => todo.status === "completed");
 }
 
-export function createTodoSnapshot(todos: readonly TodoItem[]): TodoSnapshotV2 {
-	return Object.freeze({
-		version: TODO_SNAPSHOT_VERSION,
-		todos: Object.freeze(todos.map(freezeTodoItem)),
-	});
+export function createTodoSnapshot(todos: readonly TodoItem[]) {
+	return createTodoSnapshotV3(todos);
 }
 
 export function countTodos(todos: readonly TodoItem[]): TodoCounts {
@@ -122,42 +87,4 @@ export function countTodos(todos: readonly TodoItem[]): TodoCounts {
 		}
 	}
 	return Object.freeze({ pending, inProgress, completed });
-}
-
-/**
- * Classify one persisted `todo:snapshot` data value.
- *
- * Version 1 snapshots are intentionally ignored without being treated as
- * corruption. Only a value that claims version 2 but violates its shape is
- * reported as invalid.
- */
-export function parseTodoSnapshot(value: unknown): TodoSnapshotParseResult {
-	if (!isRecord(value)) return { status: "invalid" };
-	if (!Object.hasOwn(value, "version") || value.version !== TODO_SNAPSHOT_VERSION) {
-		return { status: "ignored" };
-	}
-	if (!hasExactKeys(value, ["version", "todos"]) || !Array.isArray(value.todos)) {
-		return { status: "invalid" };
-	}
-
-	const todos: TodoItem[] = [];
-	const seen = new Set<string>();
-	for (const candidate of value.todos) {
-		if (!isRecord(candidate) || !hasExactKeys(candidate, ["content", "status"])) {
-			return { status: "invalid" };
-		}
-		if (
-			typeof candidate.content !== "string" ||
-			candidate.content.length === 0 ||
-			candidate.content !== candidate.content.trim() ||
-			!isTodoStatus(candidate.status)
-		) {
-			return { status: "invalid" };
-		}
-		if (seen.has(candidate.content)) return { status: "invalid" };
-		seen.add(candidate.content);
-		todos.push(freezeTodoItem({ content: candidate.content, status: candidate.status }));
-	}
-
-	return { status: "valid", todos: Object.freeze(todos) };
 }

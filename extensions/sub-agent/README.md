@@ -87,6 +87,11 @@ rm -rf ~/.pi/agent/my-extensions/sub-agent
 - `persona`：该工具实例给 child 追加的 system prompt section。
 - `reportDelivery`：`wakeup` 或 `quiet`。
 
+默认配置还包含只读规划调研工具 `subagent_plan`（spawn / continuable / maxDepth 1 / 继承
+model 与 thinking）：只允许 `read`、`grep`、`find`、`ls`、`tavily_search`、`tavily_extract`、
+`memory_search`、`memory_read`，并附带只读 persona。它由 `plan` extension 在 Planning Mode 使用；
+已有用户配置不会被覆盖，缺少 `subagent_plan` 时 Plan 安全降级为无委派调研。
+
 配置修改后执行 `/reload` 生效。v1 配置不会被迁移；`version` 必须是 2。
 
 ## 注册资源

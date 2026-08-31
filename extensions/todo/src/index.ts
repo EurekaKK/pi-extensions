@@ -12,9 +12,17 @@ import {
 	parseProgressWidgetAttach,
 	parseProgressWidgetRelease,
 } from "progress-widget-protocol";
+import {
+	createTodoSnapshotV3,
+	hasCommittedHandoff,
+	normalizeTodoList,
+	parseTodoReplaceRequest,
+	parseTodoReplaceResult,
+	TODO_REPLACE_REQUEST_EVENT,
+} from "todo-protocol";
 import { type FileMutationQueue, initializeTodoConfig, type TodoConfigV1 } from "./config.js";
 import { TODO_SNAPSHOT_ENTRY_TYPE } from "./constants.js";
-import { createTodoSnapshot, isFullyCompleted, parseTodoSnapshot, type TodoItem } from "./domain.js";
+import { createTodoSnapshot, isFullyCompleted, parseTodoSnapshot, preserveSources, type TodoItem } from "./domain.js";
 import { createTodoToolDefinition } from "./tool.js";
 import { tryProjectTodoWidget } from "./widget.js";
 
@@ -72,7 +80,7 @@ function restoreVisibleTodos(
 
 	if (foundInvalidV2 && !state.warningShown) {
 		state.warningShown = true;
-		notify(context, "Todo skipped an invalid version 2 snapshot and restored the latest valid state it could read.");
+		notify(context, "Todo skipped an invalid snapshot and restored the latest valid state it could read.");
 	}
 }
 
@@ -118,6 +126,38 @@ export function registerTodoExtension(pi: ExtensionAPI, config: TodoConfigV1): v
 		}
 	});
 
+	// Plan handoff：Todo 是 todo:snapshot 的唯一写入者。监听器主体必须完全同步
+	// （校验 → 幂等检查 → append → respond），且在返回前调用 respond 回调。
+	pi.events.on(TODO_REPLACE_REQUEST_EVENT, (value) => {
+		if (currentContext === undefined) return;
+		const raw = value as Record<string, unknown> | null;
+		if (typeof raw !== "object" || raw === null || typeof raw.respond !== "function") return;
+		const respond = raw.respond as (result: unknown) => void;
+		try {
+			const request = parseTodoReplaceRequest(raw);
+			if (request === null) {
+				respond({ version: 1, requestId: "", applied: false, error: "invalid handoff request" });
+				return;
+			}
+			if (request.sessionId !== currentContext.sessionManager.getSessionId()) return;
+			const entries = currentContext.sessionManager.getBranch();
+			if (hasCommittedHandoff(entries, request.handoffId)) {
+				respond(parseTodoReplaceResult({ version: 1, requestId: request.requestId, applied: false }));
+				return;
+			}
+			const todos = normalizeTodoList(request.todos);
+			const settled = isFullyCompleted(todos);
+			const stored = settled ? Object.freeze([]) : todos;
+			pi.appendEntry(TODO_SNAPSHOT_ENTRY_TYPE, createTodoSnapshotV3(stored, { handoffId: request.handoffId }));
+			state.visibleTodos = stored;
+			project(currentContext, stored);
+			respond(parseTodoReplaceResult({ version: 1, requestId: request.requestId, applied: true }));
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			respond(parseTodoReplaceResult({ version: 1, requestId: "", applied: false, error: message }));
+		}
+	});
+
 	pi.on("session_start", (_event, context) => {
 		currentContext = context;
 		state.warningShown = false;
@@ -149,6 +189,14 @@ export function registerTodoExtension(pi: ExtensionAPI, config: TodoConfigV1): v
 			show(todos, context) {
 				state.visibleTodos = todos;
 				project(context, todos);
+			},
+			preserveSources(submitted, context) {
+				try {
+					return preserveSources(context.sessionManager.getBranch(), submitted);
+				} catch {
+					// 无法读取 branch 时降级为不保留 source（unlinked），不改变持久化语义。
+					return submitted;
+				}
 			},
 		}),
 	);

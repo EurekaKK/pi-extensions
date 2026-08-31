@@ -22,11 +22,15 @@ describe("sub-agent v2 config", () => {
 		await rm(agentDir, { recursive: true, force: true });
 	});
 
-	it("creates the private v2 default config with two delegation tools", async () => {
+	it("creates the private v2 default config with subagent, subagent_fork and subagent_plan", async () => {
 		const initialized = await initializeSubAgentConfig({ agentDir, withFileMutationQueue });
 
 		expect(initialized.created).toBe(true);
-		expect(initialized.config.delegationTools.map((tool) => tool.toolName)).toEqual(["subagent", "subagent_fork"]);
+		expect(initialized.config.delegationTools.map((tool) => tool.toolName)).toEqual([
+			"subagent",
+			"subagent_fork",
+			"subagent_plan",
+		]);
 		expect(await readFile(initialized.configPath, "utf8")).toBe(`${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`);
 		expect((await stat(initialized.configDir)).mode & 0o777).toBe(0o700);
 		expect((await stat(initialized.configPath)).mode & 0o777).toBe(0o600);

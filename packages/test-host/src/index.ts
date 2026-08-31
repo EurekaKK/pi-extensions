@@ -55,6 +55,12 @@ export interface CapturedShortcut {
 	handler(context: ExtensionContext): unknown | Promise<unknown>;
 }
 
+export interface CapturedFlag {
+	readonly description?: string;
+	readonly type: "boolean" | "string";
+	readonly default: boolean | string;
+}
+
 export interface FakePiHostOptions {
 	readonly mode?: ExtensionContext["mode"];
 	readonly hasUI?: boolean;
@@ -70,15 +76,27 @@ export class FakePiHost {
 	readonly messageRenderers = new Map<string, unknown>();
 	readonly appendedEntries: AppendedEntry[] = [];
 	readonly sentMessages: SentMessage[] = [];
+	readonly flags = new Map<string, CapturedFlag>();
+	/** 内置工具名（与默认活跃工具区分；grep/find/ls 默认关闭但仍注册）。 */
+	readonly builtinTools: string[] = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"];
+	#flagValues = new Map<string, boolean | string>();
+	activeTools: string[] = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 	readonly ui = {
 		setWidget: vi.fn<(key: string, component: unknown, options?: { placement?: string }) => void>(),
 		setStatus: vi.fn<(key: string, value: unknown) => void>(),
 		notify: vi.fn<(message: string, level?: string) => void>(),
+		select: vi.fn<(title: string, options: readonly string[]) => Promise<string | undefined>>(),
+		editor: vi.fn<(title: string, initial?: string) => Promise<string | undefined>>(),
+		custom: vi.fn<(factory: unknown, options?: unknown) => Promise<unknown>>(),
 	};
 	/** When true, api.appendEntry throws before recording anything. */
 	failAppend = false;
 	/** When true, api.sendMessage throws before recording anything. */
 	failSend = false;
+	/** Number of next appendEntry calls that throw, consumed per call. */
+	failAppendCount = 0;
+	/** Number of next sendMessage calls that throw, consumed per call. */
+	failSendCount = 0;
 	/** When true, context.sessionManager.getBranch throws. */
 	failBranchRead = false;
 
@@ -118,6 +136,25 @@ export class FakePiHost {
 			registerMessageRenderer: (customType: string, renderer: unknown) => {
 				this.messageRenderers.set(customType, renderer);
 			},
+			registerFlag: (name: string, flag: CapturedFlag) => {
+				this.flags.set(name, flag);
+			},
+			getFlag: (name: string): boolean | string => {
+				const flag = this.flags.get(name);
+				return this.#flagValues.get(name) ?? flag?.default ?? false;
+			},
+			getActiveTools: () => [...this.activeTools],
+			getAllTools: () => [
+				...this.builtinTools.map((name) => ({ name, description: "", parameters: {} })),
+				...this.tools.map((tool) => ({
+					name: tool.name,
+					description: tool.description ?? "",
+					parameters: tool.parameters,
+				})),
+			],
+			setActiveTools: (names: string[]) => {
+				this.activeTools = [...names];
+			},
 			events: {
 				emit: (channel: string, data: unknown) => {
 					for (const handler of this.#eventBusHandlers.get(channel) ?? []) handler(data);
@@ -136,7 +173,10 @@ export class FakePiHost {
 				},
 			},
 			appendEntry: (customType: string, data: unknown) => {
-				if (this.failAppend) throw new Error("disk unavailable");
+				if (this.failAppend || this.failAppendCount > 0) {
+					if (this.failAppendCount > 0) this.failAppendCount -= 1;
+					throw new Error("disk unavailable");
+				}
 				const entry = {
 					type: "custom",
 					...this.#entryBase(),
@@ -147,7 +187,10 @@ export class FakePiHost {
 				this.appendedEntries.push({ customType, data });
 			},
 			sendMessage: (message: Record<string, unknown>, options?: Record<string, unknown>) => {
-				if (this.failSend) throw new Error("send failed");
+				if (this.failSend || this.failSendCount > 0) {
+					if (this.failSendCount > 0) this.failSendCount -= 1;
+					throw new Error("send failed");
+				}
 				this.sentMessages.push({ message, options });
 			},
 		} as unknown as ExtensionAPI;
@@ -160,6 +203,9 @@ export class FakePiHost {
 				notify: this.ui.notify,
 				setStatus: this.ui.setStatus,
 				setWidget: this.ui.setWidget,
+				select: this.ui.select,
+				editor: this.ui.editor,
+				custom: this.ui.custom,
 			},
 			sessionManager: {
 				getSessionId: () => this.#sessionId,
@@ -184,6 +230,11 @@ export class FakePiHost {
 		const results: unknown[] = [];
 		for (const handler of this.#handlers.get(event) ?? []) results.push(await handler(payload, this.context));
 		return results;
+	}
+
+	/** Simulate a resolved CLI extension flag value (applied ~session_start). */
+	setFlagValue(name: string, value: boolean | string): void {
+		this.#flagValues.set(name, value);
 	}
 
 	emitBus(channel: string, data: unknown): void {

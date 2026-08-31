@@ -6,11 +6,12 @@ import {
 	PROGRESS_WIDGET_STATE_EVENT,
 } from "progress-widget-protocol";
 import { type CapturedTool, FakePiHost } from "test-host";
+import { TODO_REPLACE_REQUEST_EVENT } from "todo-protocol";
 import { describe, expect, it } from "vitest";
 import type { TodoConfigV1 } from "../src/config.js";
 import { TODO_SNAPSHOT_ENTRY_TYPE, TODO_TOOL_NAME, TODO_WIDGET_KEY } from "../src/constants.js";
 import { registerTodoExtension } from "../src/index.js";
-import type { TodoWriteDetailsV1 } from "../src/tool.js";
+import type { TodoWriteDetailsV2 } from "../src/tool.js";
 
 interface AppendedEntry {
 	readonly customType: string;
@@ -85,7 +86,7 @@ class TodoHarness {
 		parameters: unknown,
 		toolCallId = `todo-${this.host.appendedEntries.length + 1}`,
 	): Promise<ToolMessage> {
-		let result: AgentToolResult<TodoWriteDetailsV1>;
+		let result: AgentToolResult<TodoWriteDetailsV2>;
 		let isError = false;
 		try {
 			const validatedParameters: unknown = validateToolArguments(
@@ -107,12 +108,12 @@ class TodoHarness {
 				undefined,
 				undefined,
 				this.context,
-			)) as AgentToolResult<TodoWriteDetailsV1>;
+			)) as AgentToolResult<TodoWriteDetailsV2>;
 		} catch (error) {
 			isError = true;
 			result = {
 				content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
-				details: {} as TodoWriteDetailsV1,
+				details: {} as TodoWriteDetailsV2,
 			};
 		}
 		return {
@@ -182,7 +183,7 @@ describe("Todo v2 extension", () => {
 		expect(result.isError).toBe(false);
 		expect(text(result)).toBe("Updated todo list: 1 pending, 1 in progress, 1 completed.");
 		expect(result.details).toEqual({
-			version: 1,
+			version: 2,
 			todos: [
 				{ content: "plan", status: "in_progress" },
 				{ content: "build", status: "pending" },
@@ -193,7 +194,7 @@ describe("Todo v2 extension", () => {
 		expect(harness.appendedEntries.at(-1)).toEqual({
 			customType: TODO_SNAPSHOT_ENTRY_TYPE,
 			data: {
-				version: 2,
+				version: 3,
 				todos: [
 					{ content: "plan", status: "in_progress" },
 					{ content: "build", status: "pending" },
@@ -216,14 +217,14 @@ describe("Todo v2 extension", () => {
 		expect(last).toEqual({
 			customType: TODO_SNAPSHOT_ENTRY_TYPE,
 			data: {
-				version: 2,
+				version: 3,
 				todos: [{ content: "second", status: "in_progress" }],
 			},
 		});
 
 		const cleared = await harness.invokeTodo({ todos: [] });
 		expect(cleared.isError).toBe(false);
-		expect(harness.appendedEntries.at(-1)?.data).toEqual({ version: 2, todos: [] });
+		expect(harness.appendedEntries.at(-1)?.data).toEqual({ version: 3, todos: [] });
 		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
 	});
 
@@ -241,11 +242,11 @@ describe("Todo v2 extension", () => {
 		expect(result.isError).toBe(false);
 		expect(text(result)).toBe("All 2 todos completed. Todo list cleared.");
 		expect(result.details).toEqual({
-			version: 1,
+			version: 2,
 			todos: [],
 			counts: { pending: 0, inProgress: 0, completed: 0 },
 		});
-		expect(harness.appendedEntries.at(-1)?.data).toEqual({ version: 2, todos: [] });
+		expect(harness.appendedEntries.at(-1)?.data).toEqual({ version: 3, todos: [] });
 		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
 	});
 
@@ -263,7 +264,7 @@ describe("Todo v2 extension", () => {
 		expect(result.isError).toBe(false);
 		expect(text(result)).toBe("Updated todo list: 1 pending, 0 in progress, 1 completed.");
 		expect(harness.appendedEntries.at(-1)?.data).toEqual({
-			version: 2,
+			version: 3,
 			todos: [
 				{ content: "done work", status: "completed" },
 				{ content: "left work", status: "pending" },
@@ -388,7 +389,7 @@ describe("Todo v2 extension", () => {
 
 		expect(harness.setWidget).toHaveBeenLastCalledWith(TODO_WIDGET_KEY, undefined, { placement: "aboveEditor" });
 		expect(harness.notify).toHaveBeenCalledTimes(1);
-		expect(String(harness.notify.mock.calls[0]?.[0])).toContain("invalid version 2 snapshot");
+		expect(String(harness.notify.mock.calls[0]?.[0])).toContain("invalid snapshot");
 	});
 
 	it("reports persistence failures as tool errors and never shows the unpersisted list", async () => {
@@ -437,5 +438,94 @@ describe("Todo v2 extension", () => {
 
 		expect(harness.setWidget).not.toHaveBeenCalled();
 		expect(harness.notify).not.toHaveBeenCalled();
+	});
+});
+
+describe("Todo v3 Plan integration", () => {
+	it("preserves plan sources when content is unchanged and drops them when content changes", async () => {
+		const harness = new TodoHarness("tui", true, CONFIG_TRUE);
+		const root = userEntry("u1", null);
+		const source = { kind: "plan-step", ref: { planId: "plan-1", planRevision: 1, stepId: "step-1" } };
+		const seeded = customEntry("s1", "u1", {
+			version: 3,
+			todos: [
+				{ content: "linked", status: "pending", source },
+				{ content: "plain", status: "pending" },
+			],
+		});
+		harness.setBranch([root, seeded]);
+		await harness.lifecycle("session_start");
+
+		await harness.invokeTodo({
+			todos: [
+				{ content: "linked", status: "in_progress" },
+				{ content: "renamed work", status: "pending" },
+			],
+		});
+
+		const last = harness.appendedEntries.at(-1);
+		expect(last?.data).toEqual({
+			version: 3,
+			todos: [
+				{ content: "linked", status: "in_progress", source },
+				{ content: "renamed work", status: "pending" },
+			],
+		});
+	});
+
+	it("commits a Plan handoff through todo:replace-request exactly once", async () => {
+		const harness = new TodoHarness("tui", true, CONFIG_TRUE);
+		await harness.lifecycle("session_start");
+		const source = { kind: "plan-step", ref: { planId: "plan-1", planRevision: 1, stepId: "step-2" } };
+		let result: unknown;
+		const respond = (value: unknown) => {
+			result = value;
+		};
+		const request = {
+			version: 1,
+			requestId: "req-1",
+			sessionId: "session-1",
+			handoffId: "handoff-1",
+			todos: [{ content: "linked", status: "pending", source }],
+			respond,
+		};
+
+		harness.host.emitBus(TODO_REPLACE_REQUEST_EVENT, request as unknown);
+
+		expect(result).toEqual({ version: 1, requestId: "req-1", applied: true });
+		expect(harness.appendedEntries.at(-1)).toEqual({
+			customType: TODO_SNAPSHOT_ENTRY_TYPE,
+			data: {
+				version: 3,
+				todos: [{ content: "linked", status: "pending", source }],
+				handoffOrigin: { handoffId: "handoff-1" },
+			},
+		});
+
+		// 幂等：同一 handoffId 再次请求不重复落盘。
+		const before = harness.appendedEntries.length;
+		harness.host.emitBus(TODO_REPLACE_REQUEST_EVENT, request as unknown);
+		expect(result).toEqual({ version: 1, requestId: "req-1", applied: false });
+		expect(harness.appendedEntries).toHaveLength(before);
+	});
+
+	it("ignores handoff requests from another session and reports invalid envelopes", async () => {
+		const harness = new TodoHarness("tui", true, CONFIG_TRUE);
+		await harness.lifecycle("session_start");
+		const results: unknown[] = [];
+		harness.host.emitBus(TODO_REPLACE_REQUEST_EVENT, {
+			version: 1,
+			requestId: "req-x",
+			sessionId: "other-session",
+			handoffId: "h-x",
+			todos: [],
+			respond: (value: unknown) => results.push(value),
+		});
+		expect(results).toHaveLength(0);
+		expect(harness.appendedEntries).toHaveLength(0);
+
+		harness.host.emitBus(TODO_REPLACE_REQUEST_EVENT, { version: 9 });
+		expect(results).toHaveLength(0);
+		expect(harness.appendedEntries).toHaveLength(0);
 	});
 });

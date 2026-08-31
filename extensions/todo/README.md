@@ -193,6 +193,15 @@ custom entry 不进入 LLM context。恢复时读取当前 conversation branch �
 所有模式使用相同的工具、校验和持久化语义。无 UI 模式不会等待 UI；UI 投影失败不会改变 Todo 状态或工具
 结果。
 
+
+## Plan Step 关联（v3）
+
+Todo 快照升级到 version 3：持久化条目可以携带内部 `source`（精确 `planId + planRevision + stepId`）
+与快照级 `handoffOrigin`。模型可见的 `todo_write` 参数保持不变（只有 `content`/`status`，拒绝未知
+字段）；当 content 与当前列表完全一致时，TodoService 自动保留原有 `source`，改写 content 会变成
+无 source 的 unlinked（discovered）Todo，由 `plan_read` 的只读 join 报告。旧 v2 快照继续作为
+unlinked 状态读取，不迁移。Plan 通过内部 `todo:replace-request` 事件请求 Todo 建立链接初始列表，
+Todo 仍是 `todo:snapshot` 的唯一写入者；重复 `handoffId` 幂等返回，不重复落盘。
 ## 限制
 
 - Todo List 只属于调用工具的那个 agent session，不是项目级、仓库级、用户全局或跨 session 的任务系统。

@@ -52,6 +52,28 @@ export const DEFAULT_CONFIG: SubAgentConfigV2 = Object.freeze({
 			toolFilter: null,
 			persona: null,
 		}),
+		Object.freeze({
+			toolName: "subagent_plan",
+			provider: "spawn",
+			backgroundMode: "continuable",
+			maxDepth: 1,
+			agentOptions: DEFAULT_AGENT_OPTIONS,
+			toolFilter: Object.freeze({
+				allow: Object.freeze([
+					"read",
+					"grep",
+					"find",
+					"ls",
+					"tavily_search",
+					"tavily_extract",
+					"memory_search",
+					"memory_read",
+				]),
+				deny: Object.freeze([]),
+			}),
+			persona:
+				"You are a read-only planning research sub-agent. Investigate, analyze, and report with concrete evidence. Do not modify files, execute shell commands, or delegate to other agents.",
+		}),
 	]),
 	reportDelivery: "wakeup",
 });

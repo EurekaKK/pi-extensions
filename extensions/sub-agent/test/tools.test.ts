@@ -56,11 +56,12 @@ const theme = {
 } as unknown as Theme;
 
 describe("sub-agent v2 parent tools", () => {
-	it("registers the five dsh-aligned tools", () => {
+	it("registers the six dsh-aligned tools including subagent_plan", () => {
 		const manager = {} as SubagentManager;
 		expect(captureTools(manager).map((tool) => tool.name)).toEqual([
 			"subagent",
 			"subagent_fork",
+			"subagent_plan",
 			"send_message",
 			"interrupt_agent",
 			"list_agents",
@@ -77,7 +78,12 @@ describe("sub-agent v2 parent tools", () => {
 				"When a background run settles, the runtime sends you a notice containing its outcome and any final assistant message.",
 		]);
 		expect(fork.promptGuidelines).toBeUndefined();
-		expect(toolAt(tools, 2).promptGuidelines).toBeUndefined();
+		expect(toolAt(tools, 2).promptGuidelines).toEqual([
+			"Use subagent_plan in the background by default. Start independent delegations together in one assistant message and continue useful work while they run. " +
+				"Set `run_in_background: false` only when your next action depends on that subagent's result. " +
+				"When a background run settles, the runtime sends you a notice containing its outcome and any final assistant message.",
+		]);
+		expect(toolAt(tools, 3).promptGuidelines).toBeUndefined();
 	});
 
 	it("defaults continuable tools to background and supports foreground override", async () => {
@@ -181,9 +187,9 @@ describe("sub-agent v2 parent tools", () => {
 			list: vi.fn(() => [{ childId: "child-1", label: "worker", status: "ready", parentSessionId: "root", depth: 1 }]),
 		} as unknown as SubagentManager;
 		const tools = captureTools(manager);
-		const send = toolAt(tools, 2);
-		const interrupt = toolAt(tools, 3);
-		const list = toolAt(tools, 4);
+		const send = toolAt(tools, 3);
+		const interrupt = toolAt(tools, 4);
+		const list = toolAt(tools, 5);
 
 		const sent = await send.execute(
 			"c1",
