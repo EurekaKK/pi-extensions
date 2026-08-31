@@ -13,8 +13,16 @@ import type { MemoryReadInput, MemoryService } from "./service.js";
 
 const MEMORY_READ_PARAMETERS = Type.Object(
 	{
-		id: Type.String({ minLength: 1 }),
-		revision: Type.Optional(Type.Integer({ minimum: 1 })),
+		id: Type.String({
+			minLength: 1,
+			description: "Exact record id from a recall, search result, or write receipt.",
+		}),
+		revision: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				description: "Exact revision to read; omit to address the record by id alone.",
+			}),
+		),
 	},
 	{ additionalProperties: false },
 );
@@ -38,7 +46,7 @@ export function registerMemoryReadTool(pi: { registerTool(tool: unknown): void }
 			name: MEMORY_READ_TOOL,
 			label: "Read memory",
 			description:
-				"Read one exact Memory Record for the current Working Directory by its record identity (optionally with an exact revision). Missing records and unavailable Stores fail with a stable not-found/Store error.",
+				"Read the full content and provenance of one record in the current Working Directory's Memory Store by exact `id` and optional `revision`.",
 			parameters: MEMORY_READ_PARAMETERS,
 			async execute(_toolCallId, parameters, signal, _onUpdate, context) {
 				if (signal?.aborted) throw new MemoryError(MEMORY_ABORTED, "memory read was aborted");

@@ -165,6 +165,29 @@ function failureCode(promise: Promise<unknown>): Promise<string> {
 	);
 }
 
+describe("memory_search prompt metadata", () => {
+	it("uses a lexical pointer, a deliberate recall workflow, and field-local query guidance", async () => {
+		const h = new MemoryHarness(await tempCwd());
+		const tool = h.host.tools.find((candidate) => candidate.name === MEMORY_SEARCH_TOOL);
+		if (tool === undefined) throw new Error(`missing tool ${MEMORY_SEARCH_TOOL}`);
+
+		expect(String(tool.description)).toBe(
+			"Search active records in the current Working Directory's Memory Store using deterministic lexical ranking. Returns compact metadata; superseded records are retrievable only through exact `memory_read`.",
+		);
+		expect(tool.promptGuidelines ?? []).toEqual([
+			"Use memory_search when prior directory knowledge may affect the task but is not already in context; call memory_read on each hit you intend to rely on.",
+		]);
+
+		const properties = asRecord(asRecord(tool.parameters).properties);
+		expect(String(asRecord(properties.query).description)).toBe(
+			"Distinctive keywords likely to appear in the record summary or content; matching is lexical, not semantic.",
+		);
+		expect(String(asRecord(properties.limit).description)).toBe(
+			"Maximum matches to return; deployment configuration may apply a lower cap.",
+		);
+	});
+});
+
 describe("memory_search tool at the loaded seam", () => {
 	it("searches active records with ranked compact hits carrying identity, revision, summary, provenance, score, and timestamps but never full content", async () => {
 		const cwd = await tempCwd();

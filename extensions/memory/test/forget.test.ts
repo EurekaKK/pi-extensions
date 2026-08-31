@@ -307,30 +307,31 @@ describe("memory_forget authority at the loaded seam", () => {
 });
 
 describe("memory_forget tool surface", () => {
-	it("registers strict parameters and guidelines that forbid proactive cleanup", async () => {
+	it("co-locates chain addressing in the tool schema and keeps one explicit-authority guideline", async () => {
 		const cwd = await tempCwd();
 		const h = new MemoryHarness(cwd);
 		const tool = h.host.tools.find((candidate) => candidate.name === MEMORY_FORGET_TOOL);
 		if (tool === undefined) throw new Error(`missing tool ${MEMORY_FORGET_TOOL}`);
 
 		expect(tool.label).toBe("Forget memory");
-		expect(String(tool.description)).toContain("supersession chain");
+		expect(String(tool.description)).toBe(
+			"Delete one complete supersession chain from the current Working Directory's Memory Store. Available only in a direct foreground human turn. Copies outside this Store may remain.",
+		);
+		expect(tool.promptGuidelines ?? []).toEqual([
+			"Use memory_forget only after the user explicitly asks to forget or delete a named memory, fact, or record id. Never infer that authority from cleanup, retention, or Store-size goals.",
+		]);
+
 		const parameters = asRecord(tool.parameters);
 		expect(parameters.additionalProperties).toBe(false);
 		const properties = asRecord(parameters.properties);
 		const idSchema = asRecord(properties.id);
 		expect(idSchema.minLength).toBe(1);
+		expect(String(idSchema.description)).toBe("Exact id of any active or superseded record in the chain.");
 		const revisionSchema = asRecord(properties.revision);
 		expect(revisionSchema.minimum).toBe(1);
-		expect(properties.id).toBeDefined();
-		expect(properties.revision).toBeDefined();
-
-		const guidelines = tool.promptGuidelines ?? [];
-		const joined = guidelines.join("\n");
-		expect(joined).toContain("memory_forget");
-		expect(joined).toContain("explicitly asks");
-		expect(joined).toContain("Never use memory_forget proactively");
-		expect(joined).toContain("cleanup");
+		expect(String(revisionSchema.description)).toBe(
+			"Exact revision for the addressed id; omit to address the record by id alone.",
+		);
 	});
 });
 

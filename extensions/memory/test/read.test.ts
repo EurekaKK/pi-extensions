@@ -64,6 +64,27 @@ async function tempCwd(): Promise<string> {
 	return mkdtemp(join(tmpdir(), "memory-read-"));
 }
 
+describe("memory_read prompt metadata", () => {
+	it("keeps exact-read guidance in the description and parameter fields without a global guideline", async () => {
+		const h = new MemoryHarness(await tempCwd());
+		const tool = h.host.tools.find((candidate) => candidate.name === MEMORY_READ_TOOL);
+		if (tool === undefined) throw new Error(`missing tool ${MEMORY_READ_TOOL}`);
+
+		expect(String(tool.description)).toBe(
+			"Read the full content and provenance of one record in the current Working Directory's Memory Store by exact `id` and optional `revision`.",
+		);
+		expect(tool.promptGuidelines ?? []).toEqual([]);
+
+		const properties = asRecord(asRecord(tool.parameters).properties);
+		expect(String(asRecord(properties.id).description)).toBe(
+			"Exact record id from a recall, search result, or write receipt.",
+		);
+		expect(String(asRecord(properties.revision).description)).toBe(
+			"Exact revision to read; omit to address the record by id alone.",
+		);
+	});
+});
+
 describe("memory_read tool at the loaded seam", () => {
 	it("reads the exact persisted record with full content and provenance", async () => {
 		const cwd = await tempCwd();

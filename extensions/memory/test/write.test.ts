@@ -137,6 +137,41 @@ async function tempCwd(): Promise<string> {
 	return mkdtemp(join(tmpdir(), "memory-write-"));
 }
 
+describe("memory_write prompt metadata", () => {
+	it("pairs a proactive completion check with durable-record criteria, exclusions, and field-local operation guidance", async () => {
+		const h = new MemoryHarness(await tempCwd());
+		const tool = h.host.tools.find((candidate) => candidate.name === MEMORY_WRITE_TOOL);
+		if (tool === undefined) throw new Error(`missing tool ${MEMORY_WRITE_TOOL}`);
+
+		expect(String(tool.description)).toBe(
+			"Persist verified, durable, directory-specific knowledge for the current Working Directory when it is hard to rediscover and absent from authoritative project documentation. Available only in a direct foreground human turn.",
+		);
+		expect(tool.promptGuidelines ?? []).toEqual([
+			"Before completing a direct foreground task, check whether it produced knowledge matching memory_write's durability criteria; persist that knowledge if so.",
+			"Keep memory_write records concise and self-contained. Leave global preferences, raw logs or large outputs, temporary paths, unresolved failures, Plans/Todos, and session summaries out of Directory Memory; never store secrets or credentials.",
+		]);
+
+		const parameters = asRecord(tool.parameters);
+		expect(parameters.additionalProperties).toBe(false);
+		const properties = asRecord(parameters.properties);
+		expect(String(asRecord(properties.operation).description)).toBe(
+			"`add` creates a new record; `supersede` corrects one active record.",
+		);
+		expect(String(asRecord(properties.summary).description)).toBe(
+			"Concise, searchable terms likely to appear in future queries.",
+		);
+		expect(String(asRecord(properties.content).description)).toBe(
+			"Complete, self-contained durable knowledge and its rationale.",
+		);
+		expect(String(asRecord(properties.targetId).description)).toBe(
+			"Required for `supersede`: exact id of the active record. Omit for `add`.",
+		);
+		expect(String(asRecord(properties.targetRevision).description)).toBe(
+			"Required for `supersede`: exact active revision. Omit for `add`.",
+		);
+	});
+});
+
 describe("memory_write authority at the loaded seam", () => {
 	it("denies before any direct human input and after the run settles", async () => {
 		const cwd = await tempCwd();

@@ -19,8 +19,16 @@ export interface MemoryForgetToolRuntime {
 
 const MEMORY_FORGET_PARAMETERS = Type.Object(
 	{
-		id: Type.String({ minLength: 1 }),
-		revision: Type.Optional(Type.Integer({ minimum: 1 })),
+		id: Type.String({
+			minLength: 1,
+			description: "Exact id of any active or superseded record in the chain.",
+		}),
+		revision: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				description: "Exact revision for the addressed id; omit to address the record by id alone.",
+			}),
+		),
 	},
 	{ additionalProperties: false },
 );
@@ -52,16 +60,14 @@ export function registerMemoryForgetTool(
 ): void {
 	const { service, authority } = runtime;
 	const guidelines = [
-		'Use memory_forget only when the user explicitly asks to physically delete a memory (for example "forget that memory", naming the fact, or citing its exact record identity). Never use memory_forget proactively for cleanup, retention, decay, housekeeping, or to reduce Store size.',
-		"memory_forget takes the exact record id and optionally its exact revision. It removes the complete connected supersession chain from the Directory Memory Store — every older and newer revision of that one logical fact, active or historical — leaving no tombstone.",
-		"memory_forget never edits Pi session history, backups, provider logs, documentation, Git, or Global User Instructions. Its receipt identifies only the removed identities and states the deletion caveat; it never reproduces the deleted content.",
+		"Use memory_forget only after the user explicitly asks to forget or delete a named memory, fact, or record id. Never infer that authority from cleanup, retention, or Store-size goals.",
 	];
 	pi.registerTool(
 		defineTool({
 			name: MEMORY_FORGET_TOOL,
 			label: "Forget memory",
 			description:
-				"Physically remove one complete Memory Record supersession chain from the Directory Memory Store during a direct foreground human turn. The exact id (optionally with the exact revision) addresses any member of the chain; the entire connected chain — every older and newer connected revision, active or superseded — is removed in one transaction without a content-bearing tombstone. The receipt identifies only the removed identities and honestly warns that copies outside the Store (Pi sessions, backups, provider logs, filesystem snapshots, published documentation, Git history) are not erased. Use only for explicit human forget requests, never as proactive cleanup.",
+				"Delete one complete supersession chain from the current Working Directory's Memory Store. Available only in a direct foreground human turn. Copies outside this Store may remain.",
 			parameters: MEMORY_FORGET_PARAMETERS,
 			promptGuidelines: guidelines,
 			async execute(_toolCallId, parameters, signal, _onUpdate, context) {

@@ -14,11 +14,29 @@ export interface MemoryToolRuntime {
 
 const MEMORY_WRITE_PARAMETERS = Type.Object(
 	{
-		operation: StringEnum(["add", "supersede"] as const),
-		summary: Type.String({ minLength: 1 }),
-		content: Type.String({ minLength: 1 }),
-		targetId: Type.Optional(Type.String({ minLength: 1 })),
-		targetRevision: Type.Optional(Type.Integer({ minimum: 1 })),
+		operation: StringEnum(["add", "supersede"] as const, {
+			description: "`add` creates a new record; `supersede` corrects one active record.",
+		}),
+		summary: Type.String({
+			minLength: 1,
+			description: "Concise, searchable terms likely to appear in future queries.",
+		}),
+		content: Type.String({
+			minLength: 1,
+			description: "Complete, self-contained durable knowledge and its rationale.",
+		}),
+		targetId: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description: "Required for `supersede`: exact id of the active record. Omit for `add`.",
+			}),
+		),
+		targetRevision: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				description: "Required for `supersede`: exact active revision. Omit for `add`.",
+			}),
+		),
 	},
 	{ additionalProperties: false },
 );
@@ -26,16 +44,15 @@ const MEMORY_WRITE_PARAMETERS = Type.Object(
 export function registerMemoryWriteTool(pi: { registerTool(tool: unknown): void }, runtime: MemoryToolRuntime): void {
 	const { service, authority } = runtime;
 	const guidelines = [
-		"Use memory_write only for verified, durable, directory-specific knowledge that would be hard to rediscover.",
-		"Never use memory_write for global preferences, secrets, credentials, raw logs, large outputs, temporary paths, unresolved failures, Plans, Todos, session summaries, or content already authoritative in project documentation.",
-		"Set memory_write.operation to add for new verified knowledge. To correct an existing memory, use operation supersede with the exact targetId and targetRevision of the still-active record plus the complete replacement content and searchable summary; supersede never edits history in place.",
+		"Before completing a direct foreground task, check whether it produced knowledge matching memory_write's durability criteria; persist that knowledge if so.",
+		"Keep memory_write records concise and self-contained. Leave global preferences, raw logs or large outputs, temporary paths, unresolved failures, Plans/Todos, and session summaries out of Directory Memory; never store secrets or credentials.",
 	];
 	pi.registerTool(
 		defineTool({
 			name: MEMORY_WRITE_TOOL,
 			label: "Write memory",
 			description:
-				"Commit one verified Memory Record for the current Working Directory during a direct foreground human turn, then return a full-content receipt with immutable provenance. operation add stores new knowledge; operation supersede corrects an exact active record by targetId and targetRevision, appending an auditable immutable successor and leaving the prior revision preserved for historical inspection.",
+				"Persist verified, durable, directory-specific knowledge for the current Working Directory when it is hard to rediscover and absent from authoritative project documentation. Available only in a direct foreground human turn.",
 			parameters: MEMORY_WRITE_PARAMETERS,
 			promptGuidelines: guidelines,
 			async execute(_toolCallId, parameters, signal, _onUpdate, context) {

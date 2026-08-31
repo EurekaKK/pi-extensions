@@ -212,8 +212,17 @@ export interface MemorySearchToolRuntime {
 
 const MEMORY_SEARCH_PARAMETERS = Type.Object(
 	{
-		query: Type.String({ minLength: 1 }),
-		limit: Type.Optional(Type.Integer({ minimum: 1 })),
+		query: Type.String({
+			minLength: 1,
+			description:
+				"Distinctive keywords likely to appear in the record summary or content; matching is lexical, not semantic.",
+		}),
+		limit: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				description: "Maximum matches to return; deployment configuration may apply a lower cap.",
+			}),
+		),
 	},
 	{ additionalProperties: false },
 );
@@ -228,8 +237,11 @@ export function registerMemorySearchTool(
 			name: MEMORY_SEARCH_TOOL,
 			label: "Search memory",
 			description:
-				"Search the active Memory Records for the current Working Directory with bounded, deterministic lexical ranking (case/punctuation folding, Latin and number tokens, overlapping Chinese bigrams, summary-weighted scores). Only active records can match; superseded records are read-only through exact memory_read. Results are compact identity/revision/summary/provenance/score/timestamp projections for exact follow-up reads.",
+				"Search active records in the current Working Directory's Memory Store using deterministic lexical ranking. Returns compact metadata; superseded records are retrievable only through exact `memory_read`.",
 			parameters: MEMORY_SEARCH_PARAMETERS,
+			promptGuidelines: [
+				"Use memory_search when prior directory knowledge may affect the task but is not already in context; call memory_read on each hit you intend to rely on.",
+			],
 			async execute(_toolCallId, parameters, signal, _onUpdate, context) {
 				if (signal?.aborted) throw new MemoryError(MEMORY_ABORTED, "memory search was aborted");
 				const outcome = await service.search(
