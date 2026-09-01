@@ -16,9 +16,10 @@ import {
 } from "./widget.js";
 
 const EMPTY_STATE: ProgressWidgetState = Object.freeze({
-	goal: null,
-	todos: Object.freeze([]),
 	agents: Object.freeze([]),
+	plan: null,
+	todos: Object.freeze([]),
+	goal: null,
 });
 const USAGE = "Usage: /progress-widget [compact|full|switch]";
 

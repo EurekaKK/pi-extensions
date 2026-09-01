@@ -19,7 +19,7 @@ describe("progress widget protocol", () => {
 		expect(parseProgressWidgetAttach({ version: 1, sessionId: "session-1", extra: true })).toBeNull();
 	});
 
-	it("parses goal, todo, and sub-agent snapshots", () => {
+	it("parses goal, plan, todo, and sub-agent snapshots", () => {
 		expect(
 			parseProgressWidgetSnapshot({
 				version: 1,
@@ -36,6 +36,21 @@ describe("progress widget protocol", () => {
 				},
 			}),
 		).toMatchObject({ source: "goal", goal: { id: "goal-1", phase: "blocked" } });
+
+		expect(
+			parseProgressWidgetSnapshot({
+				version: 1,
+				source: "plan",
+				sessionId: "session-1",
+				plan: { planId: "plan-1", phase: "reviewing", revision: 2 },
+			}),
+		).toMatchObject({ source: "plan", plan: { planId: "plan-1", phase: "reviewing", revision: 2 } });
+		expect(parseProgressWidgetSnapshot({ version: 1, source: "plan", sessionId: "session-1", plan: null })).toEqual({
+			version: 1,
+			source: "plan",
+			sessionId: "session-1",
+			plan: null,
+		});
 
 		expect(
 			parseProgressWidgetSnapshot({
@@ -81,6 +96,22 @@ describe("progress widget protocol", () => {
 				source: "todo",
 				sessionId: "session-1",
 				todos: [{ content: "", status: "pending" }],
+			}),
+		).toBeNull();
+		expect(
+			parseProgressWidgetSnapshot({
+				version: 1,
+				source: "plan",
+				sessionId: "session-1",
+				plan: { planId: "plan-1", phase: "reviewing", revision: 0 },
+			}),
+		).toBeNull();
+		expect(
+			parseProgressWidgetSnapshot({
+				version: 1,
+				source: "plan",
+				sessionId: "session-1",
+				plan: { planId: "plan-1", phase: "unknown" },
 			}),
 		).toBeNull();
 		expect(

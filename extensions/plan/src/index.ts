@@ -5,6 +5,14 @@ import {
 	getAgentDir,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
+import {
+	PROGRESS_WIDGET_ATTACH_EVENT,
+	PROGRESS_WIDGET_RELEASE_EVENT,
+	PROGRESS_WIDGET_STATE_EVENT,
+	type ProgressWidgetPlanStateV1,
+	parseProgressWidgetAttach,
+	parseProgressWidgetRelease,
+} from "progress-widget-protocol";
 import { hasCommittedHandoff } from "todo-protocol";
 import { executePlanCommand, type PlanCommandRuntime } from "./commands.js";
 import { type FileMutationQueue, initializePlanConfig, type PlanConfigV1 } from "./config.js";
@@ -15,14 +23,12 @@ import {
 	PLAN_PROPOSAL_CARD_MESSAGE_TYPE,
 	PLAN_REVISE_REQUEST_MESSAGE_TYPE,
 	PLAN_START_MESSAGE_TYPE,
-	PLAN_STATUS_KEY,
 } from "./constants.js";
-import type { PlanProposalV1 } from "./domain.js";
 import { PlanGate } from "./gate.js";
 import { renderPlanMessage } from "./message-renderer.js";
-import { registerReviewFlow } from "./review.js";
 import { PlanService } from "./service.js";
 import { registerPlanTools } from "./tools.js";
+import { tryProjectPlanWidget } from "./widget.js";
 
 export interface LoadPlanDependencies {
 	readonly agentDir: string;
@@ -50,35 +56,71 @@ export function registerPlanExtension(pi: ExtensionAPI, config: PlanConfigV1): v
 	const gate = new PlanGate(pi, config);
 	let currentContext: ExtensionContext | undefined;
 	let sessionState: PlanSessionState | undefined;
-	let pendingReview: { readonly planId: string; readonly revision: number } | undefined;
+	let attachedSessionId: string | undefined;
 	let planningArmed = false;
 	let flagWarningShown = false;
 
-	function projectFooter(context: ExtensionContext): void {
-		const state = service.state(context);
-		if (state.active === undefined) {
-			clearFooter(context);
-			return;
-		}
-		const phase = state.active.phase.toUpperCase().replace("_", " ");
-		const ref = `${state.active.planId}${state.active.revision === undefined ? "" : ` · r${state.active.revision}`}`;
-		const label = `PLAN · ${phase} · ${ref} · workspace mutations blocked`;
-		if (!context.hasUI) return;
+	function readPlanProjection(context: ExtensionContext): ProgressWidgetPlanStateV1 | null {
+		const active = service.state(context).active;
+		if (active === undefined) return null;
+		return {
+			planId: active.planId,
+			phase: active.phase,
+			...(active.revision === undefined ? {} : { revision: active.revision }),
+		};
+	}
+
+	function projectStatus(context: ExtensionContext): void {
+		currentContext = context;
 		try {
-			context.ui.setStatus(PLAN_STATUS_KEY, label);
+			const sessionId = context.sessionManager.getSessionId();
+			const plan = readPlanProjection(context);
+			if (attachedSessionId === sessionId) {
+				tryProjectPlanWidget(context, null);
+				pi.events.emit(PROGRESS_WIDGET_STATE_EVENT, {
+					version: 1,
+					source: "plan",
+					sessionId,
+					plan,
+				});
+				return;
+			}
+			tryProjectPlanWidget(context, plan);
 		} catch {
-			// Advisory UI only.
+			// Advisory UI projection and branch reads must not change Plan semantics.
 		}
 	}
 
-	function clearFooter(context: ExtensionContext): void {
-		if (!context.hasUI) return;
+	function clearStatus(context: ExtensionContext): void {
 		try {
-			context.ui.setStatus(PLAN_STATUS_KEY, undefined);
+			const sessionId = context.sessionManager.getSessionId();
+			tryProjectPlanWidget(context, null);
+			if (attachedSessionId === sessionId) {
+				pi.events.emit(PROGRESS_WIDGET_STATE_EVENT, {
+					version: 1,
+					source: "plan",
+					sessionId,
+					plan: null,
+				});
+			}
 		} catch {
-			// Advisory UI only.
+			// Advisory UI projection must not change Plan transitions.
 		}
 	}
+
+	pi.events.on(PROGRESS_WIDGET_ATTACH_EVENT, (value) => {
+		const attached = parseProgressWidgetAttach(value);
+		if (attached === null) return;
+		attachedSessionId = attached.sessionId;
+		if (currentContext?.sessionManager.getSessionId() === attached.sessionId) projectStatus(currentContext);
+	});
+
+	pi.events.on(PROGRESS_WIDGET_RELEASE_EVENT, (value) => {
+		const released = parseProgressWidgetRelease(value);
+		if (released === null || attachedSessionId !== released.sessionId) return;
+		attachedSessionId = undefined;
+		if (currentContext?.sessionManager.getSessionId() === released.sessionId) projectStatus(currentContext);
+	});
 
 	function applyGateIfNeeded(context: ExtensionContext): void {
 		const state = service.state(context);
@@ -106,7 +148,7 @@ export function registerPlanExtension(pi: ExtensionAPI, config: PlanConfigV1): v
 		if (active === undefined) {
 			gate.restore();
 			gate.reset();
-			clearFooter(context);
+			clearStatus(context);
 			return;
 		}
 		if (active.phase === "handoff_pending" && active.handoffId !== undefined) {
@@ -115,7 +157,7 @@ export function registerPlanExtension(pi: ExtensionAPI, config: PlanConfigV1): v
 				// 不自动重发 kickoff，不自动启动执行。
 				gate.restore();
 				gate.reset();
-				clearFooter(context);
+				clearStatus(context);
 				if (
 					sessionState?.sessionId === context.sessionManager.getSessionId() &&
 					!sessionState.effectiveCompleteNotified
@@ -131,7 +173,7 @@ export function registerPlanExtension(pi: ExtensionAPI, config: PlanConfigV1): v
 			}
 		}
 		applyGateIfNeeded(context);
-		projectFooter(context);
+		projectStatus(context);
 	}
 
 	const runtime: PlanCommandRuntime = {
@@ -139,8 +181,8 @@ export function registerPlanExtension(pi: ExtensionAPI, config: PlanConfigV1): v
 		service,
 		gate,
 		applyGateIfNeeded,
-		projectFooter,
-		clearFooter,
+		projectStatus,
+		clearStatus,
 		notify,
 	};
 
@@ -167,11 +209,8 @@ export function registerPlanExtension(pi: ExtensionAPI, config: PlanConfigV1): v
 	registerPlanTools(pi, {
 		pi,
 		service,
-		onSubmitted(proposal: PlanProposalV1) {
-			pendingReview = { planId: proposal.planId, revision: proposal.revision };
-			if (currentContext !== undefined) {
-				projectFooter(currentContext);
-			}
+		onSubmitted() {
+			if (currentContext !== undefined) projectStatus(currentContext);
 		},
 	});
 
@@ -192,14 +231,6 @@ export function registerPlanExtension(pi: ExtensionAPI, config: PlanConfigV1): v
 	}
 
 	gate.registerGuard(pi);
-	registerReviewFlow(
-		pi,
-		runtime,
-		() => pendingReview,
-		() => {
-			pendingReview = undefined;
-		},
-	);
 
 	pi.on("before_agent_start", (_event, context) => {
 		if (!planningArmed) return;
@@ -211,7 +242,7 @@ export function registerPlanExtension(pi: ExtensionAPI, config: PlanConfigV1): v
 		try {
 			service.start(context, objective);
 			applyGateIfNeeded(context);
-			projectFooter(context);
+			projectStatus(context);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			notify(context, `Could not start Planning Mode: ${message}`, "error");
@@ -220,7 +251,6 @@ export function registerPlanExtension(pi: ExtensionAPI, config: PlanConfigV1): v
 
 	pi.on("session_start", (_event, context) => {
 		currentContext = context;
-		pendingReview = undefined;
 		const sessionId = context.sessionManager.getSessionId();
 		sessionState = {
 			sessionId,
@@ -257,7 +287,6 @@ export function registerPlanExtension(pi: ExtensionAPI, config: PlanConfigV1): v
 
 	pi.on("session_tree", (_event, context) => {
 		currentContext = context;
-		pendingReview = undefined;
 		if (sessionState?.sessionId !== context.sessionManager.getSessionId()) {
 			sessionState = {
 				sessionId: context.sessionManager.getSessionId(),
@@ -273,9 +302,9 @@ export function registerPlanExtension(pi: ExtensionAPI, config: PlanConfigV1): v
 	pi.on("session_shutdown", (_event, context) => {
 		gate.restore();
 		gate.reset();
-		pendingReview = undefined;
 		planningArmed = false;
-		clearFooter(context);
+		tryProjectPlanWidget(context, null);
+		attachedSessionId = undefined;
 		currentContext = undefined;
 		sessionState = undefined;
 	});

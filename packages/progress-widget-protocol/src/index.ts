@@ -5,7 +5,7 @@ export const PROGRESS_WIDGET_KEY = "progress-widget:status";
 export const PROGRESS_WIDGET_SHORTCUT = "ctrl+alt+o";
 
 export type ProgressWidgetView = "compact" | "full";
-export type ProgressWidgetSource = "goal" | "todo" | "sub-agent";
+export type ProgressWidgetSource = "goal" | "plan" | "todo" | "sub-agent";
 
 export interface ProgressWidgetOwnershipV1 {
 	readonly version: 1;
@@ -30,6 +30,21 @@ export interface ProgressWidgetGoalSnapshotV1 {
 	readonly source: "goal";
 	readonly sessionId: string;
 	readonly goal: ProgressWidgetGoalStateV1 | null;
+}
+
+export type ProgressWidgetPlanPhase = "drafting" | "reviewing" | "handoff_pending";
+
+export interface ProgressWidgetPlanStateV1 {
+	readonly planId: string;
+	readonly phase: ProgressWidgetPlanPhase;
+	readonly revision?: number;
+}
+
+export interface ProgressWidgetPlanSnapshotV1 {
+	readonly version: 1;
+	readonly source: "plan";
+	readonly sessionId: string;
+	readonly plan: ProgressWidgetPlanStateV1 | null;
 }
 
 export interface ProgressWidgetTodoItemV1 {
@@ -61,6 +76,7 @@ export interface ProgressWidgetSubagentSnapshotV1 {
 
 export type ProgressWidgetSnapshotV1 =
 	| ProgressWidgetGoalSnapshotV1
+	| ProgressWidgetPlanSnapshotV1
 	| ProgressWidgetTodoSnapshotV1
 	| ProgressWidgetSubagentSnapshotV1;
 
@@ -135,6 +151,18 @@ function parseGoal(value: unknown): ProgressWidgetGoalStateV1 | null {
 	});
 }
 
+function parsePlan(value: unknown): ProgressWidgetPlanStateV1 | null {
+	if (!isRecord(value) || !hasExactKeys(value, ["planId", "phase"], ["revision"])) return null;
+	if (!isNonEmptyString(value.planId)) return null;
+	if (value.phase !== "drafting" && value.phase !== "reviewing" && value.phase !== "handoff_pending") return null;
+	if (value.revision !== undefined && (!isNonNegativeSafeInteger(value.revision) || value.revision < 1)) return null;
+	return Object.freeze({
+		planId: value.planId,
+		phase: value.phase,
+		...(value.revision === undefined ? {} : { revision: value.revision }),
+	});
+}
+
 function parseTodo(value: unknown): ProgressWidgetTodoItemV1 | null {
 	if (!isRecord(value) || !hasExactKeys(value, ["content", "status"])) return null;
 	if (!isNonEmptyString(value.content)) return null;
@@ -169,6 +197,12 @@ export function parseProgressWidgetSnapshot(value: unknown): ProgressWidgetSnaps
 		const goal = value.goal === null ? null : parseGoal(value.goal);
 		if (value.goal !== null && goal === null) return null;
 		return Object.freeze({ version: 1, source: "goal", sessionId: value.sessionId, goal });
+	}
+	if (value.source === "plan") {
+		if (!hasExactKeys(value, ["version", "source", "sessionId", "plan"])) return null;
+		const plan = value.plan === null ? null : parsePlan(value.plan);
+		if (value.plan !== null && plan === null) return null;
+		return Object.freeze({ version: 1, source: "plan", sessionId: value.sessionId, plan });
 	}
 	if (value.source === "todo") {
 		if (!hasExactKeys(value, ["version", "source", "sessionId", "todos"]) || !Array.isArray(value.todos)) return null;

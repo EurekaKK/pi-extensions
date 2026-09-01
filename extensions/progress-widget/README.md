@@ -1,6 +1,6 @@
 # progress-widget
 
-把 Goal、直接 Sub-agent Run 和 Todo 投影到 Pi 输入栏上方的一个组合 widget，并在 Compact / Full 两种视图间切换。它只负责显示，不改变三个生产者 extension 的领域状态或工具协议。
+把 Goal、活动 Plan、直接 Sub-agent Run 和 Todo 投影到 Pi 输入栏上方的一个组合 widget，并在 Compact / Full 两种视图间切换。它只负责显示，不改变四个生产者 extension 的领域状态或工具协议。
 
 ## 状态
 
@@ -9,6 +9,7 @@
 ## Extension 依赖
 
 - `goal`
+- `plan`
 - `sub-agent`
 - `todo`
 
@@ -31,7 +32,7 @@ pi remove ~/.pi/agent/my-extensions/progress-widget
 rm -rf ~/.pi/agent/my-extensions/progress-widget
 ```
 
-Goal、Sub-agent 和 Todo 不会被自动卸载。
+Goal、Plan、Sub-agent 和 Todo 不会被自动卸载。
 
 ## 注册资源
 
@@ -54,7 +55,7 @@ Goal、Sub-agent 和 Todo 不会被自动卸载。
 
 每个 session 从 Compact View 开始。快捷键只切换 widget；Pi 的 `Ctrl+O` 独立控制 transcript 卡片展开。
 
-Compact View 固定按 Sub-agent → Todo → Goal 排列：Sub-agent 一行，Todo 两行，Goal 两行。Full View 使用相同区段顺序，显示仍有活动 Run 时的全部直接 Sub-agent ID、状态和 description、所有 Todo，以及完整 Goal。
+Compact View 固定按 `Subagents → Plan → Todos → Goal → 输入框` 排列：Sub-agent 一行，活动 Plan 一行，Todo 最多两行，Goal 两行。Full View 使用相同区段顺序，显示仍有活动 Run 时的全部直接 Sub-agent ID、状态和 description、活动 Plan phase/reference、所有 Todo，以及完整 Goal。
 
 ### TUI 显示样式
 
@@ -71,7 +72,7 @@ Compact View 固定按 Sub-agent → Todo → Goal 排列：Sub-agent 一行，T
 - Sub-agent 区段仅在存在 `running` 或 `interrupting` Run 时显示。
 - Full View 不限制条目数，可能占用较多终端高度。
 - Pi extension 快捷键不能通过 `keybindings.json` 重映射；若与其他 extension 冲突，可使用命令。
-- 若本 extension 未启用，Goal、Todo 和 Sub-agent 各自显示 Compact fallback widget。
+- 若本 extension 未启用，Goal、Plan、Todo 和 Sub-agent 各自显示 Compact fallback widget。
 
 ## 权限与副作用
 

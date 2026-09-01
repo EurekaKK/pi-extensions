@@ -5,7 +5,7 @@ export const PLAN_TOOL_SUBMIT_NAME = "plan_submit" as const;
 export const PLAN_TOOL_READ_NAME = "plan_read" as const;
 export const PLAN_COMMAND_NAME = "plan" as const;
 export const PLAN_FLAG_NAME = "plan" as const;
-export const PLAN_STATUS_KEY = "plan:status" as const;
+export const PLAN_WIDGET_KEY = "plan:status" as const;
 
 export const PLAN_START_MESSAGE_TYPE = "plan:start" as const;
 export const PLAN_PROPOSAL_CARD_MESSAGE_TYPE = "plan:proposal-card" as const;

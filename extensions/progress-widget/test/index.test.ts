@@ -30,6 +30,7 @@ const state: ProgressWidgetState = {
 		maxGoalRounds: 8,
 		activation: "armed",
 	},
+	plan: { planId: "plan-1", phase: "reviewing", revision: 2 },
 	todos: [
 		{ content: "Implement dashboard", status: "in_progress" },
 		{ content: "Run tests", status: "pending" },
@@ -44,6 +45,7 @@ describe("progress widget lines", () => {
 	it("builds the bounded compact view in fixed section order", () => {
 		expect(buildProgressWidgetLines(state, "compact")).toEqual([
 			"Subagents · 1 running · 0 interrupting · 1 completed · 0 interrupted · 0 failed",
+			"Plan · reviewing · plan-1 · r2 · workspace mutations blocked",
 			"Todos · 1 in progress · 1 pending · 0 completed",
 			"◐ Implement dashboard",
 			"Goal · active · round 2/8 · armed",
@@ -56,6 +58,7 @@ describe("progress widget lines", () => {
 			"Subagents · 1 running · 0 interrupting · 1 completed · 0 interrupted · 0 failed",
 			"◐ running · child-1 · Review UI",
 			"✓ completed · child-2 · Audit tests",
+			"Plan · reviewing · plan-1 · r2 · workspace mutations blocked",
 			"Todos · 1 in progress · 1 pending · 0 completed",
 			"◐ Implement dashboard",
 			"○ Run tests",
@@ -75,6 +78,7 @@ describe("progress widget lines", () => {
 
 describe("progress widget TUI styling", () => {
 	const stylingState: ProgressWidgetState = {
+		plan: { planId: "plan-2", phase: "handoff_pending", revision: 3 },
 		goal: {
 			id: "goal-1",
 			objective: "Ship the UI",
@@ -119,12 +123,15 @@ describe("progress widget TUI styling", () => {
 		expect(rendered[5]).toBe(
 			"<error>! failed</error><muted> · </muted><dim>run-5</dim><muted> · </muted><text>Audit failed</text>",
 		);
-		expect(rendered[7]).toBe("<accent>◐</accent> <text>Implement dashboard</text>");
-		expect(rendered[8]).toBe("<muted>○</muted> <muted>Run tests</muted>");
-		expect(rendered[9]).toBe("<success>✓</success> <muted><strike>Check theme</strike></muted>");
-		expect(rendered[11]).toBe("<accent>Objective:</accent> <text>Ship the UI</text>");
-		expect(rendered[12]).toBe("<error>Blocker: dependency</error><text>: Waiting for API</text>");
-		expect(rendered.join("\n").match(/<bold>/g)).toHaveLength(3);
+		expect(rendered[6]).toBe(
+			"<accent><bold>Plan</bold></accent><accent> · handoff pending · plan-2 · r3 · workspace mutations blocked</accent>",
+		);
+		expect(rendered[8]).toBe("<accent>◐</accent> <text>Implement dashboard</text>");
+		expect(rendered[9]).toBe("<muted>○</muted> <muted>Run tests</muted>");
+		expect(rendered[10]).toBe("<success>✓</success> <muted><strike>Check theme</strike></muted>");
+		expect(rendered[12]).toBe("<accent>Objective:</accent> <text>Ship the UI</text>");
+		expect(rendered[13]).toBe("<error>Blocker: dependency</error><text>: Waiting for API</text>");
+		expect(rendered.join("\n").match(/<bold>/g)).toHaveLength(4);
 	});
 
 	it.each([
@@ -134,6 +141,7 @@ describe("progress widget TUI styling", () => {
 		["complete", "<success>✓</success> <muted><strike>Ship the UI</strike></muted>"],
 	] as const)("styles the %s Goal phase without coloring its whole objective", (phase, expected) => {
 		const phaseState: ProgressWidgetState = {
+			plan: null,
 			goal: {
 				id: "goal-1",
 				objective: "Ship the UI",
@@ -157,10 +165,10 @@ describe("progress widget TUI styling", () => {
 			taggedTheme(() => variant),
 		);
 
-		expect(component.render(1_000)[2]).toContain("<light:accent>◐</light:accent> <light:text>Implement dashboard");
+		expect(component.render(1_000)[3]).toContain("<light:accent>◐</light:accent> <light:text>Implement dashboard");
 		variant = "dark:";
 		component.invalidate();
-		expect(component.render(1_000)[2]).toContain("<dark:accent>◐</dark:accent> <dark:text>Implement dashboard");
+		expect(component.render(1_000)[3]).toContain("<dark:accent>◐</dark:accent> <dark:text>Implement dashboard");
 	});
 });
 
@@ -182,6 +190,12 @@ describe("progress widget extension", () => {
 		});
 		host.emitBus(PROGRESS_WIDGET_STATE_EVENT, {
 			version: 1,
+			source: "plan",
+			sessionId: "session-1",
+			plan: state.plan,
+		});
+		host.emitBus(PROGRESS_WIDGET_STATE_EVENT, {
+			version: 1,
 			source: "todo",
 			sessionId: "session-1",
 			todos: state.todos,
@@ -190,6 +204,7 @@ describe("progress widget extension", () => {
 		expect(host.ui.setWidget).toHaveBeenLastCalledWith(
 			PROGRESS_WIDGET_KEY,
 			[
+				"Plan · reviewing · plan-1 · r2 · workspace mutations blocked",
 				"Todos · 1 in progress · 1 pending · 0 completed",
 				"◐ Implement dashboard",
 				"Goal · active · round 2/8 · armed",
@@ -197,6 +212,19 @@ describe("progress widget extension", () => {
 			],
 			{ placement: "aboveEditor" },
 		);
+
+		host.emitBus(PROGRESS_WIDGET_STATE_EVENT, {
+			version: 1,
+			source: "plan",
+			sessionId: "session-1",
+			plan: null,
+		});
+		expect(host.ui.setWidget.mock.calls.at(-1)?.[1]).toEqual([
+			"Todos · 1 in progress · 1 pending · 0 completed",
+			"◐ Implement dashboard",
+			"Goal · active · round 2/8 · armed",
+			"◐ Ship the UI",
+		]);
 	});
 
 	it("switches view with ctrl+alt+o and resets to compact on session start", async () => {

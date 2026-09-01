@@ -26,7 +26,8 @@ scripts/install-extension.sh plan
 ```
 
 脚本会递归安装 Plan 声明的安装期依赖 `todo` 与 `sub-agent`，并把内部包依赖（`config-store`、
-`todo-protocol`）vendor 进副本。使用 `pi config` 启用或停用。卸载：
+`progress-widget-protocol`、`todo-protocol`）vendor 进副本。Plan 不要求安装 `progress-widget`；后者缺席时
+Plan 使用自己的输入框上方 fallback。使用 `pi config` 启用或停用。卸载：
 
 ```bash
 pi remove ~/.pi/agent/my-extensions/plan
@@ -45,8 +46,9 @@ rm -rf ~/.pi/agent/my-extensions/plan
 | 命令 | `/plan` | 只读状态与 `start/approve/revise/cancel/retry` 控制 |
 | CLI flag | `--plan` | 布尔；目标作为 flag 前的定位消息传入 |
 | 模型工具 | `plan_submit`、`plan_read` | 提交 Proposal / 精确读取 revision 与 Step |
-| 消息渲染器 | `plan:start`、`plan:proposal-card`、`plan:revise-request`、`plan:kickoff` | 工作流各阶段的自定义消息卡片 |
-| 状态键 | `plan:status` | TUI footer 的 Planning 阶段状态（drafting/reviewing/handoff pending） |
+| 消息渲染器 | `plan:start`、`plan:proposal-card`、`plan:revise-request`、`plan:kickoff` | 工作流各阶段的 transcript 消息 |
+| Widget key | `plan:status` | `progress-widget` 缺席时位于输入框上方的活动 Plan fallback |
+| Event bus | `progress-widget:state`；监听 `progress-widget:attach` / `progress-widget:release` | 向组合 Progress Widget 投影活动 phase 与 Plan reference |
 | session entry | `plan:change`（v1） | append-only 状态变更（见「持久化与分支」） |
 
 不注册键盘快捷键、timer、watcher、socket 或外部进程；Planning Mode 的工具策略见
@@ -86,13 +88,20 @@ README 依赖配置片段见 `extensions/sub-agent/README.md`。
 ```
 
 - 只有用户能启动与批准。模型只能 `plan_submit`、`plan_read`，并在合适时建议 `/plan start`。
-- 审批 UI（TUI focused overlay / RPC select+editor）与命令等价；关闭 overlay 不改变状态。
-- 当前 Todo 列表非空时，审批 overlay 与 `/plan approve` 反馈都会披露本次 handoff 将替换现有列表
-  （反馈中的计数为替换前的列表大小）。
+- `plan_submit` 后，完整 Proposal 与审核提示以普通 Markdown 输出进入 transcript；不会打开 overlay、
+  selector、editor 或其他阻塞式审核 UI。工作流保持 reviewing，直到用户显式执行审批命令。
+- 当前 Todo 列表非空时，Proposal 输出会在审批前警告列表将被替换；`/plan approve` 的完成反馈仍披露
+  替换前的列表大小。
 - `/plan revise` 在 reviewing 内回到 drafting；从 inactive 延续 lineage 时，objective 默认沿用
   已批准 revision 的 objective（持久化进 revise-request 并呈现在消息与状态里）。
-- 恢复（resume/reload/fork/tree）只恢复 phase、门禁与 footer，不自动弹 UI、不自动 retry、不自动执行。
+- 恢复（resume/reload/fork/tree）只恢复 phase、门禁与 Progress Widget 投影，不自动打开审核 UI、
+  不自动 retry、不自动执行。
 - 分支上已有活动工作流时，`--plan` 不启动新 workflow，而是恢复既有门禁并提示一次。
+
+活动 Plan 的 phase、Plan ID、revision（存在时）和 Workspace Mutation 封锁提示显示在输入框上方。
+启用 `progress-widget` 时，Plan 进入组合组件，固定顺序为
+`Subagents → Plan → Todos → Goal → 输入框`；Compact 与 Full View 的 Plan 区段都占一行。组合组件缺席、
+禁用或释放投影时，`plan:status` fallback 显示同样内容。handoff 完成或取消后清除 Plan 区段。
 
 ## 模型工具
 
@@ -123,8 +132,9 @@ inactive → drafting → reviewing → handoff_pending → inactive
 # 模型只读调研后提交（写入类工具被门禁阻断；Tavily / memory / subagent_plan 可用）
 plan_submit({ objective, overview, steps: [{ title, details }] })
 
-# 人类审批：TUI focused overlay、RPC select+editor 或命令三者等价
+# 人类审批：阅读 transcript 中的完整 Proposal 后显式执行命令
 /plan approve
+# 或：/plan revise <feedback>、/plan cancel
 
 # 执行：Todo 持有唯一进度；模型按 kickoff 消息读取第一个 Step 并用 todo_write 推进
 plan_read({ plan_id, revision, step_id })
@@ -168,12 +178,12 @@ fail-closed allowlist（默认）：
 
 ## 模式支持
 
-| 模式 | 工具 | 命令 | 审批 UI | Gate/门禁 |
+| 模式 | 工具 | 命令 | 审核体验 | Gate/门禁 |
 | --- | --- | --- | --- | --- |
-| TUI | 支持 | 支持 | focused overlay | 支持 |
-| RPC | 支持 | 支持 | select/editor | 支持 |
-| JSON | 支持 | 不支持 | 无 | 支持（`--plan` 时） |
-| print | 支持 | 不支持 | 无 | 支持（`--plan` 时） |
+| TUI | 支持 | 支持 | 完整 transcript Proposal + `/plan` 决策命令 | 支持 |
+| RPC | 支持 | 支持 | custom message + `prompt` 调用 `/plan` 命令 | 支持 |
+| JSON | 支持 | 不支持 | Proposal 事件；无审批 | 支持（`--plan` 时） |
+| print | 支持 | 不支持 | Proposal 输出；无审批 | 支持（`--plan` 时） |
 
 JSON/print 下 `--plan` 允许调研并提交 Proposal，但不能审批、不能 handoff、不会自动执行。
 

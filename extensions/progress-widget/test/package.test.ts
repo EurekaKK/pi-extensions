@@ -25,7 +25,7 @@ describe("progress-widget package boundary", () => {
 		const rootEntry = await readFile(ROOT_ENTRY_PATH, "utf8");
 
 		expect(manifest.pi.extensions).toEqual(["./index.ts"]);
-		expect(manifest.piExtensionDependencies).toEqual(["goal", "sub-agent", "todo"]);
+		expect(manifest.piExtensionDependencies).toEqual(["goal", "plan", "sub-agent", "todo"]);
 		expect(manifest.files).toContain("index.ts");
 		expect(tsconfig.include).toContain("index.ts");
 		expect(rootEntry).toBe('export { default } from "./src/index.js";\n');

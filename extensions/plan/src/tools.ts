@@ -94,7 +94,17 @@ export function registerPlanTools(pi: ExtensionAPI, runtime: PlanToolRuntime): v
 					overview: parameters.overview,
 					steps: parameters.steps.map((step) => ({ title: step.title, details: step.details })),
 				});
-				sendProposalCardMessage(pi, proposal);
+				let replaceWarning: string | undefined;
+				try {
+					if (foldTodoSnapshots(context.sessionManager.getBranch()).todos.length > 0) {
+						replaceWarning = "⚠ Approval replaces the current Todo list.";
+					}
+				} catch {
+					// Replacement disclosure is advisory; submission remains durable and reviewable.
+				}
+				sendProposalCardMessage(pi, proposal, {
+					...(replaceWarning === undefined ? {} : { replaceWarning }),
+				});
 				runtime.onSubmitted(proposal);
 				return Promise.resolve({
 					content: [

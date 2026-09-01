@@ -31,6 +31,7 @@ describe("Plan package boundary", () => {
 		expect(rootEntry.trim()).toBe('export { default } from "./src/index.js";');
 		expect(manifest.piExtensionDependencies).toEqual(["todo", "sub-agent"]);
 		expect(manifest.dependencies?.["todo-protocol"]).toBe("*");
+		expect(manifest.dependencies?.["progress-widget-protocol"]).toBe("*");
 		expect(manifest.dependencies?.["config-store"]).toBe("*");
 	});
 });

@@ -42,6 +42,7 @@
 	},
 	"dependencies": {
 		"config-store": "*",
+		"progress-widget-protocol": "*",
 		"todo-protocol": "*"
 	}
 }

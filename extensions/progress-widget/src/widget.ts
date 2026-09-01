@@ -2,6 +2,7 @@ import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type {
 	ProgressWidgetGoalStateV1,
+	ProgressWidgetPlanStateV1,
 	ProgressWidgetSnapshotV1,
 	ProgressWidgetSubagentRunStatus,
 	ProgressWidgetSubagentV1,
@@ -10,9 +11,10 @@ import type {
 } from "progress-widget-protocol";
 
 export interface ProgressWidgetState {
-	readonly goal: ProgressWidgetGoalStateV1 | null;
-	readonly todos: readonly ProgressWidgetTodoItemV1[];
 	readonly agents: readonly ProgressWidgetSubagentV1[];
+	readonly plan: ProgressWidgetPlanStateV1 | null;
+	readonly todos: readonly ProgressWidgetTodoItemV1[];
+	readonly goal: ProgressWidgetGoalStateV1 | null;
 }
 
 const GOAL_MARK = Object.freeze({ active: "◐", paused: "Ⅱ", blocked: "!", complete: "✓" });
@@ -28,7 +30,7 @@ const AGENT_MARK: Readonly<Record<ProgressWidgetSubagentRunStatus, string>> = Ob
 type GoalPhase = ProgressWidgetGoalStateV1["phase"];
 type TodoStatus = ProgressWidgetTodoItemV1["status"];
 type VisualStatus = GoalPhase | TodoStatus | ProgressWidgetSubagentRunStatus;
-type WidgetSection = "Subagents" | "Todos" | "Goal";
+type WidgetSection = "Subagents" | "Plan" | "Todos" | "Goal";
 
 const STATUS_COLOR: Readonly<Record<VisualStatus, ThemeColor>> = Object.freeze({
 	active: "accent",
@@ -59,6 +61,12 @@ type WidgetRow =
 function goalMetadata(goal: ProgressWidgetGoalStateV1): string {
 	const blocker = goal.blockedReason === undefined ? "" : ` · ${goal.blockedReason.code}`;
 	return `${goal.phase} · round ${goal.roundsStarted}/${goal.maxGoalRounds} · ${goal.activation}${blocker}`;
+}
+
+function planMetadata(plan: ProgressWidgetPlanStateV1): string {
+	const phase = plan.phase.replaceAll("_", " ");
+	const revision = plan.revision === undefined ? "" : ` · r${plan.revision}`;
+	return `${phase} · ${plan.planId}${revision} · workspace mutations blocked`;
 }
 
 function todoCounts(todos: readonly ProgressWidgetTodoItemV1[]): {
@@ -109,6 +117,9 @@ function compactRows(state: ProgressWidgetState): WidgetRow[] {
 			),
 		);
 	}
+	if (state.plan !== null) {
+		rows.push(header("Plan", planMetadata(state.plan)));
+	}
 	if (state.todos.length > 0) {
 		const counts = todoCounts(state.todos);
 		rows.push(
@@ -148,6 +159,9 @@ function fullRows(state: ProgressWidgetState): WidgetRow[] {
 				description: agent.description,
 			});
 		}
+	}
+	if (state.plan !== null) {
+		rows.push(header("Plan", planMetadata(state.plan)));
 	}
 	if (state.todos.length > 0) {
 		const counts = todoCounts(state.todos);
@@ -256,6 +270,7 @@ export class ProgressWidgetComponent implements Component {
 
 export function applySnapshot(state: ProgressWidgetState, snapshot: ProgressWidgetSnapshotV1): ProgressWidgetState {
 	if (snapshot.source === "goal") return { ...state, goal: snapshot.goal };
+	if (snapshot.source === "plan") return { ...state, plan: snapshot.plan };
 	if (snapshot.source === "todo") return { ...state, todos: snapshot.todos };
 	return { ...state, agents: snapshot.agents };
 }

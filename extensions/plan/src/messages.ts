@@ -22,21 +22,25 @@ export function sendPlanStartMessage(pi: ExtensionAPI, objective: string): void 
 	);
 }
 
-export function sendProposalCardMessage(pi: ExtensionAPI, proposal: PlanProposalV1): void {
+export function sendProposalCardMessage(
+	pi: ExtensionAPI,
+	proposal: PlanProposalV1,
+	options: { readonly replaceWarning?: string } = {},
+): void {
 	const summary = [
 		`Plan Proposal · ${proposal.planId} · revision ${proposal.revision}`,
 		`Objective: ${proposal.objective}`,
+		"Decision: /plan approve · /plan revise [feedback] · /plan cancel",
+		...(options.replaceWarning === undefined ? [] : [options.replaceWarning]),
 		"",
 		...proposal.steps.map((step, index) => `${index + 1}. ${step.title}`),
-		"",
-		"Awaiting your decision: /plan approve, /plan revise, or /plan cancel.",
 	].join("\n");
 	pi.sendMessage(
 		{
 			customType: PLAN_PROPOSAL_CARD_MESSAGE_TYPE,
 			content: summary,
 			display: true,
-			details: proposal,
+			details: { proposal, ...options },
 		},
 		{ triggerTurn: false },
 	);

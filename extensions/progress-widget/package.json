@@ -26,6 +26,7 @@
 	},
 	"piExtensionDependencies": [
 		"goal",
+		"plan",
 		"sub-agent",
 		"todo"
 	],

@@ -1,4 +1,9 @@
 import type { AgentToolResult, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+	PROGRESS_WIDGET_ATTACH_EVENT,
+	PROGRESS_WIDGET_RELEASE_EVENT,
+	PROGRESS_WIDGET_STATE_EVENT,
+} from "progress-widget-protocol";
 import { type CapturedTool, FakePiHost } from "test-host";
 import { TODO_SNAPSHOT_ENTRY_TYPE } from "todo-protocol";
 import { describe, expect, it } from "vitest";
@@ -10,6 +15,7 @@ import {
 	PLAN_START_MESSAGE_TYPE,
 	PLAN_TOOL_READ_NAME,
 	PLAN_TOOL_SUBMIT_NAME,
+	PLAN_WIDGET_KEY,
 } from "../src/constants.js";
 import { registerPlanExtension } from "../src/index.js";
 
@@ -96,7 +102,7 @@ class PlanTodoHarness {
 }
 
 describe("plan extension happy path", () => {
-	it("registers plan tools, command, flag, renderers and status key", () => {
+	it("registers plan tools, command, flag, and renderers", () => {
 		const harness = new PlanTodoHarness();
 		expect(harness.planTool(PLAN_TOOL_SUBMIT_NAME).executionMode).toBe("sequential");
 		expect(harness.planTool(PLAN_TOOL_READ_NAME).executionMode).toBe("parallel");
@@ -120,13 +126,18 @@ describe("plan extension happy path", () => {
 		// Planning allowlist: write tools removed, read tools present
 		expect(harness.host.activeTools).toEqual(expect.arrayContaining(["read", "plan_submit", "plan_read"]));
 		expect(harness.host.activeTools).not.toEqual(expect.arrayContaining(["edit", "write", "bash", "todo_write"]));
-		expect(harness.host.ui.setStatus).toHaveBeenCalledWith("plan:status", expect.stringContaining("DRAFTING"));
+		expect(harness.host.ui.setWidget).toHaveBeenCalledWith(PLAN_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		});
+		expect(harness.host.ui.setStatus).not.toHaveBeenCalled();
 
 		const submitted = await harness.submitProposal();
 		expect(submitted.isError).toBe(false);
 		expect(submitted.text).toContain("revision 1");
 		expect(harness.appendedChanges()).toEqual(["start", "submit"]);
-		expect(harness.host.ui.setStatus).toHaveBeenLastCalledWith("plan:status", expect.stringContaining("REVIEWING"));
+		expect(harness.host.ui.setWidget).toHaveBeenLastCalledWith(PLAN_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		});
 		// proposal card message
 		expect(harness.host.sentMessages.some((entry) => entry.message.customType === "plan:proposal-card")).toBe(true);
 
@@ -158,9 +169,11 @@ describe("plan extension happy path", () => {
 			status: "pending",
 			source: { kind: "plan-step" },
 		});
-		// gate restored + footer cleared + kickoff queued
+		// gate restored + Plan projection cleared + kickoff queued
 		expect(harness.host.activeTools).toEqual(expect.arrayContaining(["edit", "write", "bash"]));
-		expect(harness.host.ui.setStatus).toHaveBeenLastCalledWith("plan:status", undefined);
+		expect(harness.host.ui.setWidget).toHaveBeenLastCalledWith(PLAN_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		});
 		expect(harness.host.sentMessages.at(-1)?.message).toMatchObject({ customType: PLAN_KICKOFF_MESSAGE_TYPE });
 	});
 
@@ -174,10 +187,9 @@ describe("plan extension happy path", () => {
 		(harness.host.tools as CapturedTool[]) = harness.host.tools.filter((tool) => tool.name !== "todo_write");
 		await harness.command("approve");
 		expect(harness.appendedChanges()).toEqual(["start", "submit", "approve"]);
-		expect(harness.host.ui.setStatus).toHaveBeenLastCalledWith(
-			"plan:status",
-			expect.stringContaining("HANDOFF PENDING"),
-		);
+		expect(harness.host.ui.setWidget).toHaveBeenLastCalledWith(PLAN_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		});
 		expect(harness.host.sentMessages.some((entry) => entry.message.customType === PLAN_KICKOFF_MESSAGE_TYPE)).toBe(
 			false,
 		);
@@ -271,7 +283,9 @@ describe("plan extension happy path", () => {
 		);
 		harness.host.setBranch(pendingEntries);
 		await harness.lifecycle("session_tree");
-		expect(harness.host.ui.setStatus).toHaveBeenLastCalledWith("plan:status", undefined);
+		expect(harness.host.ui.setWidget).toHaveBeenLastCalledWith(PLAN_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		});
 		await harness.command("cancel");
 		expect(harness.appendedChanges().at(-1)).not.toEqual("cancel");
 	});
@@ -335,6 +349,52 @@ describe("plan extension happy path", () => {
 			limit: 100,
 		});
 		expect(paged.text).toContain("nextOffset=");
+	});
+});
+
+describe("plan progress projection", () => {
+	it("uses an above-editor fallback and publishes every active phase to progress-widget", async () => {
+		const harness = new PlanTodoHarness("rpc");
+		const snapshots: unknown[] = [];
+		harness.host.api.events.on(PROGRESS_WIDGET_STATE_EVENT, (value) => snapshots.push(value));
+		await harness.lifecycle("session_start");
+
+		await harness.command("start project the status");
+		expect(harness.host.ui.setWidget.mock.calls.at(-1)?.[1]).toEqual([expect.stringContaining("Plan · drafting")]);
+		expect(harness.host.ui.setStatus).not.toHaveBeenCalled();
+
+		harness.host.emitBus(PROGRESS_WIDGET_ATTACH_EVENT, { version: 1, sessionId: "session-1" });
+		expect(harness.host.ui.setWidget).toHaveBeenLastCalledWith(PLAN_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		});
+		expect(snapshots.at(-1)).toMatchObject({
+			version: 1,
+			source: "plan",
+			plan: { phase: "drafting" },
+		});
+
+		await harness.submitProposal();
+		expect(snapshots.at(-1)).toMatchObject({
+			source: "plan",
+			plan: { phase: "reviewing", revision: 1 },
+		});
+
+		(harness.host.tools as CapturedTool[]) = harness.host.tools.filter((tool) => tool.name !== "todo_write");
+		await harness.command("approve");
+		expect(snapshots.at(-1)).toMatchObject({
+			source: "plan",
+			plan: { phase: "handoff_pending", revision: 1 },
+		});
+
+		await harness.command("cancel");
+		expect(snapshots.at(-1)).toMatchObject({ source: "plan", plan: null });
+		await harness.command("start fallback after release");
+		harness.host.emitBus(PROGRESS_WIDGET_RELEASE_EVENT, { version: 1, sessionId: "session-1" });
+		expect(harness.host.ui.setWidget.mock.calls.at(-1)?.[1]).toEqual([expect.stringContaining("Plan · drafting")]);
+		await harness.command("cancel");
+		expect(harness.host.ui.setWidget).toHaveBeenLastCalledWith(PLAN_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		});
 	});
 });
 
@@ -403,7 +463,9 @@ describe("plan gate and recovery", () => {
 		harness.host.setFlagValue("plan", true);
 		await harness.lifecycle("session_start");
 		expect(harness.host.activeTools).not.toContain("write");
-		expect(harness.host.ui.setStatus).toHaveBeenLastCalledWith("plan:status", expect.stringContaining("REVIEWING"));
+		expect(harness.host.ui.setWidget).toHaveBeenLastCalledWith(PLAN_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		});
 		expect(harness.host.ui.notify).toHaveBeenCalledWith(
 			expect.stringContaining("--plan will not start another"),
 			"warning",
@@ -449,6 +511,9 @@ describe("plan gate and recovery", () => {
 		expect(seeded.isError).toBe(false);
 		await harness.command("start x");
 		await harness.submitProposal();
+		expect(harness.host.sentMessages.at(-1)?.message.content).toEqual(
+			expect.stringContaining("Approval replaces the current Todo list"),
+		);
 		await harness.command("approve");
 		expect(harness.appendedChanges().at(-1)).toBe("handoff-complete");
 		// 披露替换时使用替换前的计数（1），而不是新列表大小（2）
@@ -462,12 +527,15 @@ describe("plan gate and recovery", () => {
 		await clean.lifecycle("session_start");
 		await clean.command("start y");
 		await clean.submitProposal();
+		expect(clean.host.sentMessages.at(-1)?.message.content).toEqual(
+			expect.not.stringContaining("Approval replaces the current Todo list"),
+		);
 		await clean.command("approve");
 		expect(clean.appendedChanges().at(-1)).toBe("handoff-complete");
 		expect(clean.host.ui.notify).toHaveBeenLastCalledWith(expect.not.stringContaining("previous Todo list"), "info");
 	});
 
-	it("resumes an active workflow with gate and footer, and an effective-complete handoff without gate", async () => {
+	it("resumes an active workflow with gate and progress projection, and an effective-complete handoff without gate", async () => {
 		const harness = new PlanTodoHarness();
 		await harness.lifecycle("session_start");
 		await harness.command("start x");
@@ -479,33 +547,41 @@ describe("plan gate and recovery", () => {
 		harness.host.setBranch(branch);
 		await harness.lifecycle("session_start");
 		expect(harness.host.activeTools).not.toContain("edit");
-		expect(harness.host.ui.setStatus).toHaveBeenLastCalledWith("plan:status", expect.stringContaining("REVIEWING"));
+		expect(harness.host.ui.setWidget).toHaveBeenLastCalledWith(PLAN_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		});
 
-		// 清理 pendingReview 不触发任何自动 UI（无 agent_end 事件）
+		// Branch navigation restores state without opening any review UI.
 		await harness.lifecycle("session_tree");
 		expect(harness.host.ui.custom).not.toHaveBeenCalled();
+		expect(harness.host.ui.select).not.toHaveBeenCalled();
 	});
 });
 
-describe("plan review overlay and crash recovery", () => {
-	it("opens the review overlay once at agent_end and executes the chosen action", async () => {
+describe("plan inline review and crash recovery", () => {
+	it("keeps the Proposal in the transcript and waits for an explicit command", async () => {
 		const harness = new PlanTodoHarness();
 		await harness.lifecycle("session_start");
 		await harness.command("start review me");
 		await harness.submitProposal();
-		expect(harness.host.ui.custom).not.toHaveBeenCalled();
 
-		harness.host.ui.custom.mockResolvedValueOnce("approve");
+		const proposalMessage = harness.host.sentMessages.find(
+			(entry) => entry.message.customType === "plan:proposal-card",
+		)?.message;
+		expect(proposalMessage?.content).toEqual(expect.stringContaining("Decision: /plan approve"));
+		expect(proposalMessage?.content).toEqual(expect.stringContaining("/plan revise [feedback]"));
+		expect(proposalMessage?.content).toEqual(expect.stringContaining("/plan cancel"));
+
 		await harness.host.emit("agent_end", { type: "agent_end", messages: [] });
+		await harness.host.emit("agent_end", { type: "agent_end", messages: [] });
+		expect(harness.host.ui.custom).not.toHaveBeenCalled();
+		expect(harness.host.ui.select).not.toHaveBeenCalled();
+		expect(harness.host.ui.editor).not.toHaveBeenCalled();
+		expect(harness.appendedChanges()).toEqual(["start", "submit"]);
 
-		expect(harness.host.ui.custom).toHaveBeenCalledTimes(1);
-		expect(harness.host.ui.custom.mock.calls[0]?.[1]).toMatchObject({ overlay: true });
+		await harness.command("approve");
 		expect(harness.appendedChanges()).toEqual(["start", "submit", "approve", "handoff-complete"]);
 		expect(harness.host.sentMessages.at(-1)?.message).toMatchObject({ customType: PLAN_KICKOFF_MESSAGE_TYPE });
-
-		// 第二次 agent_end 不再打开 overlay（pendingReview 已消费）
-		await harness.host.emit("agent_end", { type: "agent_end", messages: [] });
-		expect(harness.host.ui.custom).toHaveBeenCalledTimes(1);
 	});
 
 	it("restores an effective-complete handoff without gate or auto-run, with one notice", async () => {
@@ -584,7 +660,9 @@ describe("plan review overlay and crash recovery", () => {
 		await harness.lifecycle("session_start");
 
 		expect(harness.host.activeTools).toEqual(expect.arrayContaining(["edit", "write", "bash"]));
-		expect(harness.host.ui.setStatus).toHaveBeenLastCalledWith("plan:status", undefined);
+		expect(harness.host.ui.setWidget).toHaveBeenLastCalledWith(PLAN_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		});
 		expect(harness.host.sentMessages).toHaveLength(0);
 		expect(harness.host.ui.notify).toHaveBeenCalledWith(expect.stringContaining("already committed"), "info");
 	});

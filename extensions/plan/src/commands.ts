@@ -11,8 +11,8 @@ export interface PlanCommandRuntime {
 	readonly service: PlanService;
 	readonly gate: PlanGate;
 	readonly applyGateIfNeeded: (context: ExtensionContext) => void;
-	readonly projectFooter: (context: ExtensionContext) => void;
-	readonly clearFooter: (context: ExtensionContext) => void;
+	readonly projectStatus: (context: ExtensionContext) => void;
+	readonly clearStatus: (context: ExtensionContext) => void;
 	readonly notify: (context: ExtensionContext, message: string, level?: "info" | "warning" | "error") => void;
 }
 
@@ -32,7 +32,7 @@ export async function executePlanCommand(
 			}
 			const { planId } = runtime.service.start(context, parsed.objective);
 			runtime.applyGateIfNeeded(context);
-			runtime.projectFooter(context);
+			runtime.projectStatus(context);
 			sendPlanStartMessage(runtime.pi, parsed.objective);
 			return `Planning Workflow started: ${planId}. Draft the Proposal with plan_submit.`;
 		}
@@ -81,7 +81,7 @@ export function retryFlow(runtime: PlanCommandRuntime, context: ExtensionContext
 			handoffId: active.handoffId,
 		});
 		runtime.gate.restore();
-		runtime.clearFooter(context);
+		runtime.clearStatus(context);
 		sendKickoffMessage(runtime.pi, proposal);
 		return "Handoff was already committed; workflow closed and execution started.";
 	}
@@ -112,7 +112,7 @@ function finishHandoff(
 	const priorCount = foldTodoSnapshots(context.sessionManager.getBranch()).todos.length;
 	const outcome = requestTodoReplace(runtime.pi, context, { requestId: `req-${handoffId}`, handoffId, todos });
 	if (!outcome.ok) {
-		runtime.projectFooter(context);
+		runtime.projectStatus(context);
 		throw new PlanError(
 			`handoff failed and remains pending: ${outcome.error}. Use /plan retry after fixing Todo.`,
 			"PLAN_HANDOFF_FAILED",
@@ -120,7 +120,7 @@ function finishHandoff(
 	}
 	runtime.service.completeHandoff(context, { planId: proposal.planId, revision: proposal.revision, handoffId });
 	runtime.gate.restore();
-	runtime.clearFooter(context);
+	runtime.clearStatus(context);
 	sendKickoffMessage(runtime.pi, proposal);
 	const replaceNote =
 		priorCount > 0
@@ -145,7 +145,7 @@ export function reviseFlow(runtime: PlanCommandRuntime, context: ExtensionContex
 			sourceRevision: active.revision,
 			...(feedback === undefined ? {} : { feedback }),
 		});
-		runtime.projectFooter(context);
+		runtime.projectStatus(context);
 		sendReviseRequestMessage(runtime.pi, { planId: active.planId, ...(feedback === undefined ? {} : { feedback }) });
 		return `Revision requested for ${active.planId}; drafting revision ${active.revision + 1}.`;
 	}
@@ -162,7 +162,7 @@ export function reviseFlow(runtime: PlanCommandRuntime, context: ExtensionContex
 		...(feedback === undefined ? {} : { feedback }),
 	});
 	runtime.applyGateIfNeeded(context);
-	runtime.projectFooter(context);
+	runtime.projectStatus(context);
 	sendReviseRequestMessage(runtime.pi, {
 		planId: approved.planId,
 		objective,
@@ -185,7 +185,7 @@ export function cancelFlow(runtime: PlanCommandRuntime, context: ExtensionContex
 	}
 	runtime.service.cancel(context);
 	runtime.gate.restore();
-	runtime.clearFooter(context);
+	runtime.clearStatus(context);
 	return `Planning Workflow ${active.planId} cancelled; no execution list was created.`;
 }
 
