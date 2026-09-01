@@ -108,6 +108,8 @@ function finishHandoff(
 			ref: { planId: proposal.planId, planRevision: proposal.revision, stepId: step.stepId },
 		},
 	}));
+	// 在替换发生前统计既有列表：只有非空旧列表才披露替换，且计数必须来自替换前。
+	const priorCount = foldTodoSnapshots(context.sessionManager.getBranch()).todos.length;
 	const outcome = requestTodoReplace(runtime.pi, context, { requestId: `req-${handoffId}`, handoffId, todos });
 	if (!outcome.ok) {
 		runtime.projectFooter(context);
@@ -120,10 +122,9 @@ function finishHandoff(
 	runtime.gate.restore();
 	runtime.clearFooter(context);
 	sendKickoffMessage(runtime.pi, proposal);
-	const existing = foldTodoSnapshots(context.sessionManager.getBranch()).todos;
 	const replaceNote =
-		existing.length > 0
-			? `\nNote: the previous Todo list (${existing.length} items) was replaced; its history remains only in the session.`
+		priorCount > 0
+			? `\nNote: approval replaced the previous Todo list (${priorCount} item${priorCount === 1 ? "" : "s"}); its history remains only in the session.`
 			: "";
 	return `Plan approved and handed off; ${todos.length} linked Todos created (all pending). Execution started.${replaceNote}`;
 }
@@ -152,15 +153,22 @@ export function reviseFlow(runtime: PlanCommandRuntime, context: ExtensionContex
 	if (approved === undefined) {
 		throw new PlanError("no approved Plan to revise; use /plan start <objective>", "PLAN_NO_APPROVED_PLAN");
 	}
+	// spec：inactive→drafting 延续 lineage 时，objective 默认沿用已批准 revision 的 objective。
+	const objective = approved.proposal.objective;
 	runtime.service.reviseRequest(context, {
 		planId: approved.planId,
 		sourceRevision: approved.revision,
+		objective,
 		...(feedback === undefined ? {} : { feedback }),
 	});
 	runtime.applyGateIfNeeded(context);
 	runtime.projectFooter(context);
-	sendReviseRequestMessage(runtime.pi, { planId: approved.planId, ...(feedback === undefined ? {} : { feedback }) });
-	return `Re-planning approved ${approved.planId} from revision ${approved.revision}; the new revision must cover all remaining work.`;
+	sendReviseRequestMessage(runtime.pi, {
+		planId: approved.planId,
+		objective,
+		...(feedback === undefined ? {} : { feedback }),
+	});
+	return `Re-planning approved ${approved.planId} from revision ${approved.revision}; objective defaults to ${JSON.stringify(objective)}. The new revision must cover all remaining work.`;
 }
 
 export function cancelFlow(runtime: PlanCommandRuntime, context: ExtensionContext): string {
@@ -187,8 +195,11 @@ export function renderStatus(state: FoldedPlanState): string {
 		lines.push(
 			`Status: ${state.active.phase}`,
 			`Plan: ${state.active.planId}${state.active.revision === undefined ? "" : ` · revision ${state.active.revision}`}`,
-			"Workspace mutations are blocked while the Planning Workflow is active.",
 		);
+		if (state.active.phase === "drafting" && state.active.defaultObjective !== undefined) {
+			lines.push(`Objective (default): ${state.active.defaultObjective}`);
+		}
+		lines.push("Workspace mutations are blocked while the Planning Workflow is active.");
 	} else {
 		lines.push("Status: no active planning workflow.");
 	}

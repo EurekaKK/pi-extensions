@@ -93,7 +93,13 @@ export class PlanService {
 
 	reviseRequest(
 		context: Pick<ExtensionContext, "sessionManager">,
-		options: { readonly planId: string; readonly sourceRevision: number; readonly feedback?: string },
+		options: {
+			readonly planId: string;
+			readonly sourceRevision: number;
+			/** 从 inactive 延续 lineage 时的默认 objective（源自 Latest Approved Plan）。 */
+			readonly objective?: string;
+			readonly feedback?: string;
+		},
 	): void {
 		const change: PlanChange = {
 			kind: "plan/change",
@@ -101,6 +107,7 @@ export class PlanService {
 			operation: "revise-request",
 			planId: options.planId,
 			sourceRevision: options.sourceRevision,
+			...(options.objective === undefined ? {} : { objective: options.objective }),
 			...(options.feedback === undefined ? {} : { feedback: options.feedback }),
 			requestedAt: this.#now(),
 		};

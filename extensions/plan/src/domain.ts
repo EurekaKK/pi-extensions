@@ -57,6 +57,8 @@ export type PlanChange =
 			readonly operation: "revise-request";
 			readonly planId: string;
 			readonly sourceRevision: number;
+			/** 从 inactive 延续 lineage 时默认带出的 objective（源自 Latest Approved Plan）。 */
+			readonly objective?: string;
 			readonly feedback?: string;
 			readonly requestedAt: number;
 	  }
@@ -99,6 +101,8 @@ export interface FoldedPlanState {
 				readonly phase: PlanPhase;
 				readonly revision?: number;
 				readonly handoffId?: string;
+				/** drafting 中可用的默认 objective（来自 revise-request 延续 lineage）。 */
+				readonly defaultObjective?: string;
 		  }
 		| undefined;
 	/** 每个 planId 最后一次提交的 proposal（含历史 revision 查询用 map）。 */
@@ -245,7 +249,16 @@ export function parsePlanChange(value: unknown): PlanChangeParseResult {
 				};
 			}
 			case "revise-request": {
-				const allowedKeys = ["feedback", "kind", "operation", "planId", "requestedAt", "sourceRevision", "version"];
+				const allowedKeys = [
+					"feedback",
+					"kind",
+					"objective",
+					"operation",
+					"planId",
+					"requestedAt",
+					"sourceRevision",
+					"version",
+				];
 				if (!Object.keys(value).every((key) => allowedKeys.includes(key))) return { status: "invalid" };
 				if (
 					!Object.hasOwn(value, "planId") ||
@@ -261,6 +274,7 @@ export function parsePlanChange(value: unknown): PlanChangeParseResult {
 				) {
 					return { status: "invalid" };
 				}
+				if (value.objective !== undefined && !isNonEmptyString(value.objective)) return { status: "invalid" };
 				if (value.feedback !== undefined && typeof value.feedback !== "string") return { status: "invalid" };
 				return {
 					status: "valid",
@@ -270,6 +284,7 @@ export function parsePlanChange(value: unknown): PlanChangeParseResult {
 						operation: "revise-request",
 						planId: value.planId,
 						sourceRevision: value.sourceRevision,
+						...(value.objective === undefined ? {} : { objective: value.objective }),
 						...(value.feedback === undefined ? {} : { feedback: value.feedback }),
 						requestedAt: value.requestedAt,
 					},
@@ -416,10 +431,16 @@ export function foldPlanChanges(
 				break;
 			}
 			case "revise-request": {
+				const drafting: NonNullable<FoldedPlanState["active"]> = {
+					planId: change.planId,
+					phase: "drafting",
+					revision: change.sourceRevision,
+					...(change.objective === undefined ? {} : { defaultObjective: change.objective }),
+				};
 				if (active?.planId === change.planId && (active.phase === "reviewing" || active.phase === "drafting")) {
-					active = { planId: change.planId, phase: "drafting", revision: change.sourceRevision };
+					active = drafting;
 				} else if (active === undefined && approvedByPlan.has(change.planId)) {
-					active = { planId: change.planId, phase: "drafting", revision: change.sourceRevision };
+					active = drafting;
 				}
 				break;
 			}

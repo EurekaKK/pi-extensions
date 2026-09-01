@@ -52,6 +52,28 @@ describe("plan domain parse", () => {
 			parsePlanChange({
 				kind: "plan/change",
 				version: 1,
+				operation: "revise-request",
+				planId: "p",
+				sourceRevision: 1,
+				objective: "keep the goal",
+				requestedAt: 3,
+			}),
+		).toMatchObject({ status: "valid", change: { objective: "keep the goal" } });
+		expect(
+			parsePlanChange({
+				kind: "plan/change",
+				version: 1,
+				operation: "revise-request",
+				planId: "p",
+				sourceRevision: 1,
+				objective: "",
+				requestedAt: 3,
+			}).status,
+		).toBe("invalid");
+		expect(
+			parsePlanChange({
+				kind: "plan/change",
+				version: 1,
 				operation: "approve",
 				planId: "p",
 				revision: 1,
@@ -165,6 +187,42 @@ describe("plan domain parse", () => {
 		const state = foldPlanChanges(entries);
 		expect(state.active).toMatchObject({ planId: "p1", phase: "drafting", revision: 1 });
 		expect(state.latestApproved?.revision).toBe(1);
+	});
+
+	it("folds an objective default for inactive re-plan from the approved lineage", () => {
+		const entries = [
+			change({ kind: "plan/change", version: 1, operation: "start", planId: "p1", objective: "goal", startedAt: 1 }),
+			change({ kind: "plan/change", version: 1, operation: "submit", proposal: proposal("p1", 1), submittedAt: 2 }),
+			change({
+				kind: "plan/change",
+				version: 1,
+				operation: "approve",
+				planId: "p1",
+				revision: 1,
+				handoffId: "h1",
+				approvedAt: 3,
+			}),
+			change({
+				kind: "plan/change",
+				version: 1,
+				operation: "handoff-complete",
+				planId: "p1",
+				revision: 1,
+				handoffId: "h1",
+				completedAt: 4,
+			}),
+			change({
+				kind: "plan/change",
+				version: 1,
+				operation: "revise-request",
+				planId: "p1",
+				sourceRevision: 1,
+				objective: "goal",
+				requestedAt: 5,
+			}),
+		];
+		const state = foldPlanChanges(entries);
+		expect(state.active).toMatchObject({ planId: "p1", phase: "drafting", revision: 1, defaultObjective: "goal" });
 	});
 
 	it("reports invalid current-version entries but stays usable", () => {

@@ -241,8 +241,11 @@ function renderStatus(state: FoldedPlanState): string {
 	if (state.active !== undefined) {
 		lines.push(
 			`Plan status: ${state.active.phase} · ${state.active.planId}${state.active.revision === undefined ? "" : ` · revision ${state.active.revision}`}`,
-			"Workspace mutations are blocked while the Planning Workflow is active.",
 		);
+		if (state.active.phase === "drafting" && state.active.defaultObjective !== undefined) {
+			lines.push(`Objective (default): ${state.active.defaultObjective}`);
+		}
+		lines.push("Workspace mutations are blocked while the Planning Workflow is active.");
 	} else {
 		lines.push("Plan status: no active workflow.");
 	}

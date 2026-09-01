@@ -33,6 +33,7 @@ interface PlanSessionState {
 	sessionId: string;
 	effectiveCompleteNotified: boolean;
 	fallbackNotified: boolean;
+	invalidEntriesNotified: boolean;
 }
 
 function notify(context: ExtensionContext, message: string, level: "info" | "warning" | "error" = "info"): void {
@@ -85,6 +86,18 @@ export function registerPlanExtension(pi: ExtensionAPI, config: PlanConfigV1): v
 			// 恢复或续跑时按当前 runtime 的活动工具快照重新建立门禁。
 			gate.apply(context);
 		}
+	}
+
+	/** 每个 session 最多一次：跳过形状损坏的当前版本 plan:change 条目时给出 sanitized 警告。 */
+	function warnAboutInvalidEntries(context: ExtensionContext): void {
+		if (sessionState === undefined || sessionState.invalidEntriesNotified) return;
+		if (!service.state(context).foundInvalid) return;
+		sessionState.invalidEntriesNotified = true;
+		notify(
+			context,
+			"Skipped malformed Plan entries on this branch; valid history remains usable. (one-time notice)",
+			"warning",
+		);
 	}
 
 	function reconcileActiveWorkflow(context: ExtensionContext): void {
@@ -209,8 +222,29 @@ export function registerPlanExtension(pi: ExtensionAPI, config: PlanConfigV1): v
 		currentContext = context;
 		pendingReview = undefined;
 		const sessionId = context.sessionManager.getSessionId();
-		sessionState = { sessionId, effectiveCompleteNotified: false, fallbackNotified: false };
+		sessionState = {
+			sessionId,
+			effectiveCompleteNotified: false,
+			fallbackNotified: false,
+			invalidEntriesNotified: false,
+		};
+		warnAboutInvalidEntries(context);
 		if (pi.getFlag(PLAN_FLAG_NAME) === true) {
+			const active = service.state(context).active;
+			if (active !== undefined) {
+				// 分支已有活动工作流（恢复会话）：--plan 不启动新 workflow；
+				// 按当前 runtime 重放既有门禁，保持 fail-closed 的变更封锁。
+				reconcileActiveWorkflow(context);
+				if (!flagWarningShown && context.hasUI) {
+					flagWarningShown = true;
+					notify(
+						context,
+						`An active Planning Workflow (${active.phase}) exists on this branch; --plan will not start another. The existing gate is restored.`,
+						"warning",
+					);
+				}
+				return;
+			}
 			planningArmed = true;
 			if (!flagWarningShown && context.hasUI) {
 				flagWarningShown = true;
@@ -229,8 +263,10 @@ export function registerPlanExtension(pi: ExtensionAPI, config: PlanConfigV1): v
 				sessionId: context.sessionManager.getSessionId(),
 				effectiveCompleteNotified: false,
 				fallbackNotified: false,
+				invalidEntriesNotified: false,
 			};
 		}
+		warnAboutInvalidEntries(context);
 		reconcileActiveWorkflow(context);
 	});
 

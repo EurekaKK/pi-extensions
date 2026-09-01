@@ -44,13 +44,20 @@ export function sendProposalCardMessage(pi: ExtensionAPI, proposal: PlanProposal
 
 export function sendReviseRequestMessage(
 	pi: ExtensionAPI,
-	options: { readonly planId: string; readonly feedback?: string },
+	options: { readonly planId: string; readonly objective?: string; readonly feedback?: string },
 ): void {
-	const feedback = options.feedback === undefined ? "" : `\nFeedback: ${options.feedback}`;
+	const lines = [`Plan ${options.planId} requires revision.`];
+	if (options.objective !== undefined) {
+		lines.push(`Objective (defaulted from the approved Plan): ${options.objective}`);
+	}
+	if (options.feedback !== undefined) {
+		lines.push(`Feedback: ${options.feedback}`);
+	}
+	lines.push("", "Submit the next revision with plan_submit; it must cover all remaining work from the current state.");
 	pi.sendMessage(
 		{
 			customType: PLAN_REVISE_REQUEST_MESSAGE_TYPE,
-			content: `Plan ${options.planId} requires revision.${feedback}\n\nSubmit the next revision with plan_submit; it must cover all remaining work from the current state.`,
+			content: lines.join("\n"),
 			display: true,
 			details: options,
 		},

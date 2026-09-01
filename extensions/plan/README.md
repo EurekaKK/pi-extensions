@@ -36,6 +36,22 @@ rm -rf ~/.pi/agent/my-extensions/plan
 卸载不会级联卸载 todo/sub-agent。**不要与官方 Plan Mode 示例同时启用**：两者都占用 `/plan` 与
 `--plan`，会产生歧义；启用本 extension 前请先停用官方示例。
 
+## 注册资源
+
+本 extension 注册：
+
+| 资源 | 名称 | 说明 |
+| --- | --- | --- |
+| 命令 | `/plan` | 只读状态与 `start/approve/revise/cancel/retry` 控制 |
+| CLI flag | `--plan` | 布尔；目标作为 flag 前的定位消息传入 |
+| 模型工具 | `plan_submit`、`plan_read` | 提交 Proposal / 精确读取 revision 与 Step |
+| 消息渲染器 | `plan:start`、`plan:proposal-card`、`plan:revise-request`、`plan:kickoff` | 工作流各阶段的自定义消息卡片 |
+| 状态键 | `plan:status` | TUI footer 的 Planning 阶段状态（drafting/reviewing/handoff pending） |
+| session entry | `plan:change`（v1） | append-only 状态变更（见「持久化与分支」） |
+
+不注册键盘快捷键、timer、watcher、socket 或外部进程；Planning Mode 的工具策略见
+「Planning Mode 工具策略」。
+
 ## 配置
 
 配置位于 `<agentDir>/plan/config.json`（通常 `~/.pi/agent/plan/config.json`），首次加载自动创建：
@@ -71,8 +87,12 @@ README 依赖配置片段见 `extensions/sub-agent/README.md`。
 
 - 只有用户能启动与批准。模型只能 `plan_submit`、`plan_read`，并在合适时建议 `/plan start`。
 - 审批 UI（TUI focused overlay / RPC select+editor）与命令等价；关闭 overlay 不改变状态。
-- 当前 Todo 列表非空时，审批界面会提示本次 handoff 将替换现有列表。
+- 当前 Todo 列表非空时，审批 overlay 与 `/plan approve` 反馈都会披露本次 handoff 将替换现有列表
+  （反馈中的计数为替换前的列表大小）。
+- `/plan revise` 在 reviewing 内回到 drafting；从 inactive 延续 lineage 时，objective 默认沿用
+  已批准 revision 的 objective（持久化进 revise-request 并呈现在消息与状态里）。
 - 恢复（resume/reload/fork/tree）只恢复 phase、门禁与 footer，不自动弹 UI、不自动 retry、不自动执行。
+- 分支上已有活动工作流时，`--plan` 不启动新 workflow，而是恢复既有门禁并提示一次。
 
 ## 模型工具
 
@@ -92,7 +112,29 @@ inactive → drafting → reviewing → handoff_pending → inactive
 ```
 
 活动状态没有 `executing`。`/plan start` 新起 lineage；`/plan revise` 在 reviewing 内回到 drafting，
-或存在 Latest Approved Plan 时从 inactive 延续 lineage。
+或存在 Latest Approved Plan 时从 inactive 延续 lineage（objective 默认沿用已批准 revision）。
+
+## 示例
+
+```text
+# 交互式：用户显式启动规划
+/plan start 把 todo 升级到 v3 并加入 plan-step 关联
+
+# 模型只读调研后提交（写入类工具被门禁阻断；Tavily / memory / subagent_plan 可用）
+plan_submit({ objective, overview, steps: [{ title, details }] })
+
+# 人类审批：TUI focused overlay、RPC select+editor 或命令三者等价
+/plan approve
+
+# 执行：Todo 持有唯一进度；模型按 kickoff 消息读取第一个 Step 并用 todo_write 推进
+plan_read({ plan_id, revision, step_id })
+
+# 对已批准 Plan 重新规划（objective 默认延续）
+/plan revise 新 revision 需覆盖剩余全部工作
+
+# CLI 一次性规划：调研并提交 Proposal；JSON/print 下不审批、不 handoff、不自动执行
+pi "设计 X 的实现方案" --plan
+```
 
 ## Planning Mode 工具策略
 
@@ -116,6 +158,8 @@ fail-closed allowlist（默认）：
   - `plan:change` v1：start / submit（完整 Proposal，每 revision 一次）/ revise-request / approve
     （含 handoffId）/ handoff-complete / cancel。
 - 已批准 revision 不可变；历史条目保留可审计；删除 session 即删除 Plan 数据。
+- 形状损坏的当前版本 `plan:change` 条目会被跳过，每个 session 最多提示一次 sanitized 警告，
+  其余有效历史不受影响。
 - Todo 快照 v3 由 Todo 独占写入；handoff 的初始列表携带 `handoffId` origin 与每项精确
   `{planId, planRevision, stepId}` source。
 - 崩溃窗口（Todo 已提交但缺少 handoff-complete）在恢复时视为已生效完成：关闭门禁、提示一条

@@ -235,10 +235,22 @@ describe("plan extension happy path", () => {
 		expect(harness.appendedChanges().at(-1)).toBe("handoff-complete");
 		expect(harness.host.activeTools).toEqual(expect.arrayContaining(["edit", "write", "bash"]));
 
-		// inactive 时 revise 延续 lineage
+		// inactive 时 revise 延续 lineage，objective 默认从已批准 revision 带出
 		await harness.command("revise revisit");
 		expect(harness.appendedChanges().at(-1)).toBe("revise-request");
-		expect(harness.latestPlanChange()).toMatchObject({ planId: expect.stringContaining("plan-"), sourceRevision: 2 });
+		expect(harness.latestPlanChange()).toMatchObject({
+			planId: expect.stringContaining("plan-"),
+			sourceRevision: 2,
+			objective: "integrate plan and todo",
+		});
+		// 默认 objective 呈现在消息、命令反馈与只读状态中
+		expect(harness.host.sentMessages.at(-1)?.message).toMatchObject({
+			customType: "plan:revise-request",
+			content: expect.stringContaining("Objective (defaulted from the approved Plan): integrate plan and todo"),
+		});
+		expect(harness.host.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("objective defaults to"), "info");
+		const stateRead = await harness.invokeTool(PLAN_TOOL_READ_NAME, {});
+		expect(stateRead.text).toContain("Objective (default): integrate plan and todo");
 	});
 
 	it("rejects cancel after durable handoff commit", async () => {
@@ -376,6 +388,83 @@ describe("plan gate and recovery", () => {
 		expect(harness.appendedChanges()).toEqual(["start"]);
 		expect(harness.latestPlanChange()).toMatchObject({ objective: "design the new adapter" });
 		expect(harness.host.activeTools).not.toContain("write");
+	});
+
+	it("--plan on a branch with an active workflow restores the gate instead of starting a duplicate", async () => {
+		const harness = new PlanTodoHarness();
+		await harness.lifecycle("session_start");
+		await harness.command("start x");
+		await harness.submitProposal();
+		const branch = harness.host.branch();
+		await harness.lifecycle("session_shutdown");
+
+		// 恢复会话 + --plan：分支已有 reviewing workflow，不得启动新 workflow，门禁必须重放
+		harness.host.setBranch(branch);
+		harness.host.setFlagValue("plan", true);
+		await harness.lifecycle("session_start");
+		expect(harness.host.activeTools).not.toContain("write");
+		expect(harness.host.ui.setStatus).toHaveBeenLastCalledWith("plan:status", expect.stringContaining("REVIEWING"));
+		expect(harness.host.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("--plan will not start another"),
+			"warning",
+		);
+
+		// 首个 direct prompt 不得触发重复 start；写工具仍被封锁
+		await harness.host.emit("before_agent_start", {
+			type: "before_agent_start",
+			prompt: "do work",
+			systemPrompt: "",
+		});
+		expect(harness.appendedChanges().filter((op) => op === "start")).toHaveLength(1);
+		expect(harness.host.activeTools).not.toContain("write");
+	});
+
+	it("warns once per session about malformed Plan entries and stays usable", async () => {
+		const harness = new PlanTodoHarness();
+		const malformed = {
+			id: "c1",
+			parentId: null,
+			timestamp: "2026-01-01T00:00:00.000Z",
+			type: "custom",
+			customType: PLAN_CHANGE_ENTRY_TYPE,
+			data: { kind: "plan/change", version: 1, operation: "start", planId: "", objective: "x", startedAt: 1 },
+		} as SessionEntry;
+		harness.host.setBranch([malformed]);
+		await harness.lifecycle("session_start");
+		expect(harness.host.ui.notify).toHaveBeenCalledTimes(1);
+		expect(harness.host.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Skipped malformed Plan entries"),
+			"warning",
+		);
+		// 同一 session 再次 navigation 不再重复警告
+		await harness.lifecycle("session_tree");
+		expect(harness.host.ui.notify).toHaveBeenCalledTimes(1);
+	});
+
+	it("discloses Todo replacement only when a prior non-empty list exists, with the prior count", async () => {
+		const harness = new PlanTodoHarness();
+		await harness.lifecycle("session_start");
+		// 预先存在非空 Todo 列表
+		const seeded = await harness.invokeTool("todo_write", { todos: [{ content: "existing work", status: "pending" }] });
+		expect(seeded.isError).toBe(false);
+		await harness.command("start x");
+		await harness.submitProposal();
+		await harness.command("approve");
+		expect(harness.appendedChanges().at(-1)).toBe("handoff-complete");
+		// 披露替换时使用替换前的计数（1），而不是新列表大小（2）
+		expect(harness.host.ui.notify).toHaveBeenLastCalledWith(
+			expect.stringContaining("previous Todo list (1 item);"),
+			"info",
+		);
+
+		// 无既有列表时不披露替换
+		const clean = new PlanTodoHarness();
+		await clean.lifecycle("session_start");
+		await clean.command("start y");
+		await clean.submitProposal();
+		await clean.command("approve");
+		expect(clean.appendedChanges().at(-1)).toBe("handoff-complete");
+		expect(clean.host.ui.notify).toHaveBeenLastCalledWith(expect.not.stringContaining("previous Todo list"), "info");
 	});
 
 	it("resumes an active workflow with gate and footer, and an effective-complete handoff without gate", async () => {
