@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import {
 	type Api,
@@ -134,7 +134,7 @@ function createSessionManager(request: ChildSessionRequest): SessionManager {
 function createForkSessionManager(request: ChildSessionRequest): SessionManager {
 	const parentFile = request.parentSessionFile;
 	if (parentFile === undefined) throw new SubagentError("fork requires a persisted parent session file");
-	const parentManager = SessionManager.open(parentFile, dirname(parentFile), request.cwd);
+	const parentManager = SessionManager.open(parentFile, request.sessionDir ?? dirname(parentFile), request.cwd);
 	let boundaryId = request.forkBeforeEntryId;
 	if (boundaryId === undefined) {
 		const branch = parentManager.getBranch();
@@ -151,9 +151,35 @@ function createForkSessionManager(request: ChildSessionRequest): SessionManager 
 	}
 	const childFile = parentManager.createBranchedSession(boundaryId);
 	if (childFile === undefined) throw new SubagentError("fork could not create a child session");
-	const childManager = SessionManager.open(childFile, request.sessionDir ?? dirname(childFile), request.cwd);
-	childManager.appendCustomEntry(DESCRIPTOR_ENTRY_TYPE, descriptorFor(request));
-	return childManager;
+	parentManager.appendCustomEntry(DESCRIPTOR_ENTRY_TYPE, descriptorFor(request));
+	return parentManager;
+}
+
+function restoreSessionManager(request: ChildSessionRequest, sessionFile: string): SessionManager {
+	// Pi's open() creates a new session when its file is absent or empty. A
+	// continuation must fail instead of silently replacing the child's history.
+	const stat = statSync(sessionFile);
+	if (!stat.isFile() || stat.size === 0) {
+		throw new SubagentError("persisted child session is empty or unavailable");
+	}
+	const manager = SessionManager.open(sessionFile, request.sessionDir, request.cwd);
+	const descriptor = [...manager.getBranch()]
+		.reverse()
+		.find((entry) => entry.type === "custom" && entry.customType === DESCRIPTOR_ENTRY_TYPE);
+	const data: unknown = descriptor?.type === "custom" ? descriptor.data : undefined;
+	if (
+		typeof data !== "object" ||
+		data === null ||
+		!("version" in data) ||
+		data.version !== DESCRIPTOR_VERSION ||
+		!("childId" in data) ||
+		data.childId !== request.childId ||
+		!("parentSessionId" in data) ||
+		data.parentSessionId !== request.parentSessionId
+	) {
+		throw new SubagentError("persisted child session does not match this child");
+	}
+	return manager;
 }
 
 export function createPiChildSessionFactory(
@@ -173,7 +199,11 @@ export function createPiChildSessionFactory(
 				projectTrusted: parentContext.isProjectTrusted(),
 			});
 			const sessionManager =
-				request.provider === "fork" ? createForkSessionManager(request) : createSessionManager(request);
+				request.resumeSessionFile !== undefined
+					? restoreSessionManager(request, request.resumeSessionFile)
+					: request.provider === "fork"
+						? createForkSessionManager(request)
+						: createSessionManager(request);
 
 			const appendSystemPrompt = [
 				CHILD_SYSTEM_PROMPT,

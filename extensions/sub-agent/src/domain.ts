@@ -64,6 +64,8 @@ export interface ChildSessionRequest {
 	readonly forkBeforeEntryId?: string | undefined;
 	readonly cwd: string;
 	readonly sessionDir?: string | undefined;
+	/** Reopen this exact persisted child session instead of spawning or forking again. */
+	readonly resumeSessionFile?: string | undefined;
 	readonly depth: number;
 	readonly model: { readonly provider: string; readonly id: string };
 	readonly thinkingLevel: string;

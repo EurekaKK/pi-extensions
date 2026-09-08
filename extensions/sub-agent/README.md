@@ -161,14 +161,22 @@ subagent_fork({ "description": "follow-up review", "prompt": "审阅上一轮结
 
 ## 持久化与清理
 
-continuable child session 保存在：
+continuable child 与 fork 产生的 session 文件保存在（文件名由 Pi 分配）：
 
 ```text
-<agentDir>/sub-agent/sessions/<parentSessionId>/<childId>.jsonl
+<agentDir>/sub-agent/sessions/<parentSessionId>/<timestamp>_<sessionId>.jsonl
 ```
 
-父 session 存活期间，`send_message` 可以冷恢复 child。父 session shutdown 后文件保留，不会自动恢复
-执行。不再需要时可手动删除对应 `<parentSessionId>` 目录。
+每次运行结算后释放 child 的运行实例。父 session 存活期间，`send_message` 按保存的确切文件路径重新打开
+continuable child，保留之前的对话历史；fork child 也恢复自己的会话，不重新复制父历史。文件缺失、为空、
+无法识别或归属不匹配时报告失败，不以新会话替代历史。
+
+父 session shutdown 时递归关闭整棵后代 Manager 树：停止接收新任务、清空待处理消息、取消活动运行，
+等待尚在创建或清理的实例退出，再释放实例并注销 Manager。重复关闭共用同一次清理；关闭期间不再发送
+report 或结算消息唤醒父会话。`interrupt_agent` 仍只中断当前轮次，不执行这套整树关闭。
+
+shutdown 后文件保留，不会自动恢复执行或重建 child 列表。不再需要时可手动删除对应 `<parentSessionId>` 目录；
+多级委派的文件分别位于各自父 session ID 对应的目录。
 
 ## 模式支持
 

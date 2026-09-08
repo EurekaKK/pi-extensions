@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONFIG } from "../src/config.js";
 import type {
 	ChildMessage,
@@ -93,6 +93,11 @@ const SPAWN_TOOL = DEFAULT_CONFIG.delegationTools[0];
 const FORK_TOOL = DEFAULT_CONFIG.delegationTools[1];
 if (SPAWN_TOOL === undefined || FORK_TOOL === undefined) throw new Error("missing default delegation tools");
 
+const testManagers: SubagentManager[] = [];
+afterEach(async () => {
+	await Promise.all(testManagers.splice(0).map((manager) => manager.shutdown()));
+});
+
 function makeManager(overrides: Partial<ConstructorParameters<typeof SubagentManager>[0]> = {}) {
 	const pi = { sendMessage: vi.fn() };
 	const childFactory = (overrides.childFactory ?? new FakeChildFactory()) as ChildSessionFactory;
@@ -109,6 +114,7 @@ function makeManager(overrides: Partial<ConstructorParameters<typeof SubagentMan
 		childSessionDir: "/tmp/sub-agent-sessions/root",
 		...overrides,
 	});
+	testManagers.push(manager);
 	return { manager, pi, childFactory };
 }
 
@@ -117,7 +123,141 @@ async function flush(): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function blockingHandle(childId: string): ChildSessionHandle {
+	let release: (() => void) | undefined;
+	return {
+		childId,
+		prompt: vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		),
+		abort: vi.fn(async () => {
+			release?.();
+		}),
+		dispose: vi.fn(async () => {}),
+		messages: () => [],
+	};
+}
+
 describe("SubagentManager v2", () => {
+	it("recursively shuts down active descendants and is idempotent", async () => {
+		const handles = [blockingHandle("a"), blockingHandle("b"), blockingHandle("c")];
+		const managers: SubagentManager[] = [];
+		const notifications: ReturnType<typeof vi.fn>[] = [];
+		let ownerSessionId = "shutdown-tree-root";
+		let parentSessionId: string | undefined;
+		try {
+			for (const [depth, handle] of handles.entries()) {
+				const { manager, pi } = makeManager({
+					ownerSessionId,
+					parentSessionId,
+					depth,
+					childFactory: { create: async () => handle },
+				});
+				managers.push(manager);
+				notifications.push(pi.sendMessage);
+				parentSessionId = ownerSessionId;
+				// Native fork sessions may have a different session ID from the logical child ID.
+				ownerSessionId = `pi-${(await manager.start(SPAWN_TOOL, "nested", "wait", true)).childId}`;
+			}
+			const root = managers[0];
+			if (root === undefined) throw new Error("missing root");
+			await Promise.all([root.shutdown(), root.shutdown()]);
+			for (const handle of [...handles].reverse()) {
+				expect(handle.abort).toHaveBeenCalledTimes(1);
+				expect(handle.dispose).toHaveBeenCalledTimes(1);
+			}
+			for (const manager of managers) expect(manager.listChildren()).toEqual([]);
+			for (const notify of notifications) expect(notify).not.toHaveBeenCalled();
+		} finally {
+			for (const manager of managers) await manager.shutdown();
+		}
+	});
+
+	it("finds descendants even after the owning one-shot record was removed", async () => {
+		const root = makeManager({ ownerSessionId: "settled-root" });
+		const started = await root.manager.start(SPAWN_TOOL, "one-shot", "done", false);
+		expect(root.manager.listUiAgents()).toEqual([]);
+		const handle = blockingHandle("grandchild");
+		const child = makeManager({
+			ownerSessionId: started.childId,
+			parentSessionId: "settled-root",
+			depth: 1,
+			childFactory: { create: async () => handle },
+		});
+		await child.manager.start(SPAWN_TOOL, "descendant", "wait", true);
+		await root.manager.shutdown();
+		expect(handle.abort).toHaveBeenCalledOnce();
+		expect(handle.dispose).toHaveBeenCalledOnce();
+		await expect(child.manager.sendMessage("missing", "continue")).rejects.toThrow("shut down");
+	});
+
+	it.each([false, true])("waits for late creation and prevents startup during shutdown (cold=%s)", async (cold) => {
+		let resolveCreate: ((handle: ChildSessionHandle) => void) | undefined;
+		let lateRequest: ChildSessionRequest | undefined;
+		const lateHandle = blockingHandle("late-child");
+		let calls = 0;
+		const childFactory: ChildSessionFactory = {
+			async create(request) {
+				if (cold && calls++ === 0) return new FakeChildHandle(request.childId, "/tmp/fake-session.jsonl");
+				lateRequest = request;
+				return new Promise((resolve) => {
+					resolveCreate = resolve;
+				});
+			},
+		};
+		const { manager, pi } = makeManager({ ownerSessionId: "late-root", childFactory });
+		let starting: Promise<unknown>;
+		if (cold) {
+			const child = await manager.start(SPAWN_TOOL, "worker", "first", true);
+			await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledOnce());
+			pi.sendMessage.mockClear();
+			starting = manager.sendMessage(child.childId, "second");
+		} else {
+			starting = expect(manager.start(SPAWN_TOOL, "worker", "first", true)).rejects.toThrow("shut down");
+		}
+		const closed = vi.fn();
+		const closing = manager.shutdown().then(closed);
+		await flush();
+		expect(closed).not.toHaveBeenCalled();
+		expect(lateRequest?.signal?.aborted).toBe(true);
+		// A factory can register its child extension while its caller is closing.
+		const nested = makeManager({ ownerSessionId: "late-native-session", parentSessionId: "late-root" });
+		if (resolveCreate === undefined) throw new Error("factory was not called");
+		resolveCreate(lateHandle);
+		await starting;
+		await closing;
+		expect(lateHandle.prompt).not.toHaveBeenCalled();
+		expect(lateHandle.abort).toHaveBeenCalledOnce();
+		expect(lateHandle.dispose).toHaveBeenCalledOnce();
+		expect(pi.sendMessage).not.toHaveBeenCalled();
+		await expect(nested.manager.sendMessage("missing", "continue")).rejects.toThrow("shut down");
+	});
+
+	it("drops queued turns on shutdown but interruption alone preserves descendants", async () => {
+		const parentHandle = blockingHandle("parent");
+		const childHandle = blockingHandle("child");
+		const factory = { create: vi.fn(async () => parentHandle) };
+		const root = makeManager({ ownerSessionId: "interrupt-root", childFactory: factory });
+		const started = await root.manager.start(SPAWN_TOOL, "parent", "wait", true);
+		const child = makeManager({
+			ownerSessionId: started.childId,
+			parentSessionId: "interrupt-root",
+			childFactory: { create: async () => childHandle },
+		});
+		await child.manager.start(SPAWN_TOOL, "child", "wait", true);
+		await root.manager.sendMessage(started.childId, "queued");
+		root.manager.interrupt(started.childId);
+		await vi.waitFor(() => expect(root.manager.listChildren()[0]?.status).toBe("ready"));
+		expect(childHandle.abort).not.toHaveBeenCalled();
+		expect(childHandle.dispose).not.toHaveBeenCalled();
+		await root.manager.shutdown();
+		expect(childHandle.abort).toHaveBeenCalledOnce();
+		expect(childHandle.dispose).toHaveBeenCalledOnce();
+		expect(factory.create).toHaveBeenCalledOnce();
+	});
 	it("runs spawn foreground, returns final output, and disposes the child", async () => {
 		const { manager, childFactory } = makeManager();
 		const result = await manager.start(SPAWN_TOOL, "review", "please review", false, undefined);

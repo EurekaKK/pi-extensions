@@ -21,6 +21,7 @@ export interface SubagentManagerOptions {
 	readonly pi: Pick<ExtensionAPI, "sendMessage">;
 	readonly childFactory: ChildSessionFactory;
 	readonly ownerSessionId: string;
+	readonly parentSessionId?: string | undefined;
 	readonly cwd: string;
 	readonly depth: number;
 	readonly parentSessionFile?: string | undefined;
@@ -109,6 +110,7 @@ function finalChildText(messages: readonly ChildMessage[]): string {
 
 export class SubagentManager {
 	readonly ownerSessionId: string;
+	readonly parentSessionId: string | undefined;
 	readonly config: SubAgentConfigV2;
 	readonly depth: number;
 	readonly #pi: SubagentManagerOptions["pi"];
@@ -123,10 +125,14 @@ export class SubagentManager {
 	readonly #now: () => number;
 	readonly #onStateChanged: ((agents: readonly SubagentUiEntry[]) => void) | undefined;
 	readonly #children = new Map<string, ChildRecord>();
+	readonly #operations = new Set<Promise<unknown>>();
+	readonly #lifetime = new AbortController();
 	#shutdown = false;
+	#shutdownPromise: Promise<void> | undefined;
 
 	constructor(options: SubagentManagerOptions) {
 		this.ownerSessionId = options.ownerSessionId;
+		this.parentSessionId = options.parentSessionId;
 		this.config = options.config;
 		this.depth = options.depth;
 		this.#pi = options.pi;
@@ -154,16 +160,18 @@ export class SubagentManager {
 			throw new SubagentError(`delegation tool ${policy.toolName} does not support background one-shot jobs`);
 		}
 		const mode = runInBackground ? "continuable" : "one-shot";
-		return this.#startChild(
-			{
-				policy,
-				provider: policy.provider,
-				mode,
-				label,
-				prompt,
-				signal,
-			},
-			!runInBackground,
+		return this.#track(
+			this.#startChild(
+				{
+					policy,
+					provider: policy.provider,
+					mode,
+					label,
+					prompt,
+					signal: signal === undefined ? this.#lifetime.signal : AbortSignal.any([signal, this.#lifetime.signal]),
+				},
+				!runInBackground,
+			),
 		);
 	}
 
@@ -176,7 +184,7 @@ export class SubagentManager {
 			return `message queued as the next turn for subagent ${childId}`;
 		}
 		const next = record.pending.shift();
-		if (next !== undefined) void this.#activateContinuable(record, next.text);
+		if (next !== undefined) void this.#track(this.#activateContinuable(record, next.text));
 		return `message queued as the next turn for subagent ${childId}`;
 	}
 
@@ -238,6 +246,7 @@ export class SubagentManager {
 		readonly runId?: string;
 		readonly outcome?: SubagentRunOutcome;
 	}): Promise<void> {
+		if (this.#shutdown) return Promise.resolve();
 		const content =
 			input.customType === REPORT_MESSAGE_TYPE
 				? `Background subagent ${input.record.childId} reported:\n${input.text}`
@@ -260,17 +269,47 @@ export class SubagentManager {
 		return Promise.resolve();
 	}
 
-	async shutdown(): Promise<void> {
+	shutdown(): Promise<void> {
+		if (this.#shutdownPromise !== undefined) return this.#shutdownPromise;
 		this.#shutdown = true;
+		// Publish the completion promise before abort callbacks can reenter shutdown.
+		this.#shutdownPromise = Promise.resolve().then(() => this.#close());
+		this.#lifetime.abort();
+		return this.#shutdownPromise;
+	}
+
+	#ownedManagers(): SubagentManager[] {
+		// Ownership outlives live handles and one-shot UI records, and native fork
+		// session IDs need not equal the logical child IDs used by parent tools.
+		return [...managerRegistry.values()].filter(
+			(manager) => manager !== this && manager.parentSessionId === this.ownerSessionId,
+		);
+	}
+
+	async #close(): Promise<void> {
 		const records = [...this.#children.values()];
-		for (const record of records) {
-			if (record.active) await record.live?.abort().catch(() => undefined);
-		}
-		for (const record of records) {
-			if (record.live !== undefined) await record.live.dispose().catch(() => undefined);
-		}
+		for (const record of records) record.pending.length = 0;
+		await Promise.allSettled([
+			...this.#ownedManagers().map((manager) => manager.shutdown()),
+			...records.filter((record) => record.active).map((record) => record.live?.abort()),
+		]);
+		// Run owners perform their own disposal. Wait for both active runs and
+		// in-flight factories, so a late handle cannot outlive this shutdown.
+		await Promise.allSettled([...this.#operations]);
+		// A factory may have registered a nested manager while shutdown awaited it.
+		await Promise.allSettled(this.#ownedManagers().map((manager) => manager.shutdown()));
+		await Promise.allSettled(records.map((record) => this.#disposeLive(record)));
 		this.#children.clear();
 		unregisterManager(this);
+	}
+
+	#track<T>(operation: Promise<T>): Promise<T> {
+		this.#operations.add(operation);
+		void operation.then(
+			() => this.#operations.delete(operation),
+			() => this.#operations.delete(operation),
+		);
+		return operation;
 	}
 
 	#listEntry(record: ChildRecord): SubagentListEntry {
@@ -384,9 +423,7 @@ export class SubagentManager {
 					? { forkBeforeEntryId: this.#getForkBoundary() }
 					: {}),
 				cwd: this.#cwd,
-				...(input.mode === "continuable" && this.#childSessionDir !== undefined
-					? { sessionDir: this.#childSessionDir }
-					: {}),
+				...(this.#childSessionDir !== undefined ? { sessionDir: this.#childSessionDir } : {}),
 				depth: childDepth,
 				model,
 				thinkingLevel,
@@ -406,6 +443,11 @@ export class SubagentManager {
 		record.live = handle;
 		record.sessionFile = handle.sessionFile;
 		record.status = "idle";
+		if (this.#shutdown) {
+			await handle.abort().catch(() => undefined);
+			await this.#disposeLive(record);
+			throw new SubagentError("sub-agent runtime shut down during child creation");
+		}
 
 		if (record.interruptRequested) {
 			record.active = true;
@@ -441,11 +483,12 @@ export class SubagentManager {
 			}
 		}
 
-		void this.#activateContinuable(record, input.prompt);
+		void this.#track(this.#activateContinuable(record, input.prompt));
 		return { childId, foreground: false };
 	}
 
 	async #activateContinuable(record: ChildRecord, text: string): Promise<void> {
+		if (this.#shutdown) return;
 		if (record.active) {
 			record.pending.push({ messageId: randomUUID(), text });
 			return;
@@ -463,6 +506,7 @@ export class SubagentManager {
 					parentSessionFile: this.#parentSessionFile,
 					cwd: this.#cwd,
 					...(this.#childSessionDir === undefined ? {} : { sessionDir: this.#childSessionDir }),
+					resumeSessionFile: record.sessionFile,
 					depth: record.depth,
 					model: record.descriptor.model,
 					thinkingLevel: record.descriptor.thinkingLevel,
@@ -470,13 +514,14 @@ export class SubagentManager {
 					...(record.descriptor.toolFilter === undefined ? {} : { toolFilter: record.descriptor.toolFilter }),
 					...(record.descriptor.persona === undefined ? {} : { persona: record.descriptor.persona }),
 					prompt: turnText,
+					signal: this.#lifetime.signal,
 					onReport: (output) => this.#acceptChildReport(record.childId, output),
 				});
 				record.live = handle;
 				record.sessionFile = handle.sessionFile;
 			}
 
-			if (record.interruptRequested) {
+			if (record.interruptRequested || this.#shutdown) {
 				const runId = record.runId;
 				await handle.abort().catch(() => undefined);
 				await this.#disposeLive(record);
@@ -487,7 +532,7 @@ export class SubagentManager {
 
 			while (record.active) {
 				await handle.prompt(turnText);
-				if (record.interruptRequested) break;
+				if (record.interruptRequested || this.#shutdown) break;
 				const next = record.pending.shift();
 				if (next === undefined) break;
 				turnText = next.text;
@@ -499,9 +544,9 @@ export class SubagentManager {
 			await this.#disposeLive(record);
 			this.#settle(record, outcome);
 			void this.#notifySettlement(record, runId, outcome, output);
-			if (outcome === "completed") {
+			if (outcome === "completed" && !this.#shutdown) {
 				const next = record.pending.shift();
-				if (next !== undefined) void this.#activateContinuable(record, next.text);
+				if (next !== undefined) void this.#track(this.#activateContinuable(record, next.text));
 			}
 		} catch (error) {
 			const interrupted = record.interruptRequested || (error instanceof Error && error.name === "AbortError");
