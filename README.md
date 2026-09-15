@@ -103,6 +103,7 @@ npm test --workspaces
 | 名称 | 状态 | 说明 | 路径 |
 | --- | --- | --- | --- |
 | `context-management` | experimental | 按 dsh 方式 spill、prune 并生成结构化 Checkpoint，接管 Pi 原生 compaction | [`extensions/context-management`](./extensions/context-management/) |
+| `eureka-ui` | experimental | 将内置工具显示压成 hidden/line/native 三档，并在编辑器上方用一行普通文本投影当前活动 | [`extensions/eureka-ui`](./extensions/eureka-ui/) |
 | `goal` | experimental | 通过模型工具管理 session Goal，并由 Goal Round Driver 自动续跑 active goal | [`extensions/goal`](./extensions/goal/) |
 | `memory` | experimental | 为精确 Working Directory 保存并动态召回本地长期记忆 | [`extensions/memory`](./extensions/memory/) |
 | `plan` | experimental | 用户启动与审批的规划工作流；完整 Proposal 持久化，执行进度交接给 Todo | [`extensions/plan`](./extensions/plan/) |
