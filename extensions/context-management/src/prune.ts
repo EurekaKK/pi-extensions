@@ -71,7 +71,6 @@ export function applyPruneToMessages(
 			toolCallId: message.toolCallId,
 			toolName: message.toolName,
 			content: pruned,
-			...(message.addedToolNames === undefined ? {} : { addedToolNames: [...message.addedToolNames] }),
 			isError: message.isError,
 			timestamp: message.timestamp,
 		};

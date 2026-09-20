@@ -1,5 +1,11 @@
+import { getCurrentSystemMessage } from "@earendil-works/pi-ai";
 import type { ContextEvent, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { type CompactableSelection, messageIndexForEntry, selectCompactable } from "../compaction/selection.js";
+import {
+	type CompactableSelection,
+	checkpointPrefix,
+	messageIndexForEntry,
+	selectCompactable,
+} from "../compaction/selection.js";
 import type { ContextManagementConfigV1 } from "../config.js";
 import {
 	type ContextBudget,
@@ -42,6 +48,10 @@ function pendingProjection(
 	if (boundary === null || entryBoundary < 0) {
 		return { messages: messages.map((message) => structuredClone(message)), entries };
 	}
+	// Pi 0.86.0 carries the prompt and tool loadout in system messages, and replays an installed
+	// compaction entry as `[systemMessage, summary, ...kept]`. The projection must match that shape:
+	// without the resolved system message this window's requests would carry no system prompt.
+	const systemMessage = getCurrentSystemMessage(messages);
 	const syntheticEntry: SessionEntry = {
 		type: "compaction",
 		id: pending.details.checkpointId,
@@ -53,9 +63,11 @@ function pendingProjection(
 		details: pending.details,
 		usage: pending.usage,
 		fromHook: true,
+		...(systemMessage === undefined ? {} : { systemMessage }),
 	};
 	return {
 		messages: [
+			...(systemMessage === undefined ? [] : [systemMessage]),
 			{
 				role: "compactionSummary",
 				summary: pending.summary,
@@ -96,7 +108,8 @@ export function compileContext(input: {
 	});
 	const compactableEstimate =
 		compactable === null ? 0 : correctedEstimate(estimateProjection(compactable.newlyEligibleMessages), calibration);
-	const checkpointEstimate = messages[0]?.role === "compactionSummary" ? estimateProjection([messages[0]]) : 0;
+	const checkpointSummary = checkpointPrefix(messages).summary;
+	const checkpointEstimate = checkpointSummary === undefined ? 0 : estimateProjection([checkpointSummary]);
 	const tailEstimate = compactable?.tail.estimatedTokens ?? estimateProjection(messages);
 	input.state.metrics = {
 		model: `${model.provider}/${model.id}`,

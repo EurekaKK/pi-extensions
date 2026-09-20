@@ -1,4 +1,5 @@
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import type { Api, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, normalizeContext } from "@earendil-works/pi-ai";
 import type {
 	ContextEvent,
 	ExtensionAPI,
@@ -117,8 +118,8 @@ export class ContextHarness {
 				buildContextEntries: () => [...this.#branch],
 			},
 			modelRegistry: {
-				getProvider: (provider: string) => (provider === model.provider ? this.faux.provider : undefined),
-				getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test-key" }),
+				streamSimple: (requestModel: Model<Api>, context: Context, options?: SimpleStreamOptions) =>
+					this.faux.provider.streamSimple(requestModel, normalizeContext(context), options),
 			},
 		} as unknown as ExtensionContext;
 		this.api = {
