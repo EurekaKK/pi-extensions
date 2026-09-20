@@ -80,6 +80,7 @@ biome.json
 - 仓库统一使用 npm workspaces，根目录只维护一份 `package-lock.json`，不得混用 pnpm 或 Yarn。
 - 每个 extension 自带开发配置，并在自己的 `devDependencies` 中声明 Biome、TypeScript 和 Vitest；配置一致性由模板保证。
 - Pi 核心包使用当前 `@earendil-works/*` scope，放入 `peerDependencies`，版本范围按官方要求使用 `"*"`，不得打包进 extension。
+- 根 `package.json` 的 `devDependencies` 固定开发基准的 Pi 版本（`@earendil-works/pi-ai`、`pi-coding-agent`、`pi-tui`），供本仓库的类型检查与测试使用；它是开发基准而非运行时依赖，extension 侧仍只声明 `peerDependencies: "*"`。升级 Pi 基准版本时同步改这里并更新根 `package-lock.json`。
 - 运行时依赖放入 `dependencies`，不得依赖 `devDependencies` 才能运行。
 - extension 间的共性实现优先沉淀为 `packages/<name>/` 内部共享包并以依赖声明引用（见 ADR-0034）；
   直接复制守卫、校验器等横切代码到多个 extension 是漂移源，不允许新增此类拷贝。

@@ -13,5 +13,10 @@
 		"test:repository-scripts": "node --test \"scripts/test/*.test.mjs\"",
 		"test:install-script": "npm run test:repository-scripts",
 		"requirement:new": "node scripts/new-requirement.mjs"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-ai": "^0.86.0",
+		"@earendil-works/pi-coding-agent": "^0.86.0",
+		"@earendil-works/pi-tui": "^0.86.0"
 	}
 }
