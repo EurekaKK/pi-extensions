@@ -139,6 +139,10 @@ checkpoint 和后台 candidate 的 `idle/preparing/ready/installed/discarded/fai
 - 可选进程内 observer `Symbol.for("pi.context-management.candidate-lifecycle.v1")` 只发出 versioned
   `started/ready/installed/discarded/failed` 与短 detail；没有监听器时零副作用，监听器异常被忽略，不含正文、路径、ID 或 fingerprint。
 - 不假设自己与其他 context/compaction owner 共存。
+- 与 Pi 的 prompt cache warming（0.86.0 新增，`cacheWarming` 默认 `"streaming"`）无冲突：Pi 在上下文变化时
+  （模型切换、compaction、branch 导航）会停止 warming；我们的 checkpoint 安装即属于该情形，最坏情况是安装前
+  已排定的一次 refresh 白跑一趟，其响应不进入模型上下文。warming 还需要模型带有 `promptCache` 生命周期元数据，
+  只有部分模型（如直连 Anthropic）内置该元数据，其他模型需在 `models.json` 声明后才可能触发。
 
 ## 持久化
 

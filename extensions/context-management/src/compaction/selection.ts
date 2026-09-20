@@ -12,8 +12,23 @@ export interface CompactableSelection {
 	readonly firstEligibleEntryId: string;
 }
 
-function checkpointOffset(messages: readonly AgentMessage[]): number {
-	return messages[0]?.role === "compactionSummary" ? 1 : 0;
+export interface CheckpointPrefix {
+	/** Index where compactable content starts: past the leading prompt state and any installed checkpoint summary. */
+	readonly offset: number;
+	readonly summary?: Extract<AgentMessage, { role: "compactionSummary" }>;
+}
+
+/**
+ * Pi 0.86.0 replays an installed compaction entry as `[systemMessage, summary]`, so the previous
+ * checkpoint summary is no longer fixed at `messages[0]`; the leading system message carries the
+ * prompt and tool loadout and is prompt state rather than compactable conversation content.
+ */
+export function checkpointPrefix(messages: readonly AgentMessage[]): CheckpointPrefix {
+	let offset = 0;
+	while (messages[offset]?.role === "system") offset += 1;
+	const candidate = messages[offset];
+	if (candidate?.role !== "compactionSummary") return { offset };
+	return { offset: offset + 1, summary: candidate };
 }
 
 function earliestUnfinalizedIndex(messages: readonly AgentMessage[], start: number, end: number): number | null {
@@ -74,7 +89,7 @@ export function selectCompactable(input: {
 	readonly tailTarget: number;
 	readonly currentRunEntryId: string | null;
 }): CompactableSelection | null {
-	const offset = checkpointOffset(input.messages);
+	const { offset, summary: previousCheckpoint } = checkpointPrefix(input.messages);
 	const currentRunIndex = messageIndexForEntry(input.contextEntries, input.currentRunEntryId) ?? input.messages.length;
 	let tail = selectProtectedTail(input.messages, input.tailTarget, currentRunIndex);
 	const unsafeIndex = earliestUnfinalizedIndex(input.messages, offset, tail.startIndex);
@@ -87,12 +102,11 @@ export function selectCompactable(input: {
 	if (firstEligible === undefined) return null;
 	const covered = [...spans].reverse().find((span) => span.end <= tail.startIndex);
 	if (covered === undefined) return null;
-	const first = input.messages[0];
 	return Object.freeze({
 		newlyEligibleMessages: Object.freeze(
 			input.messages.slice(offset, tail.startIndex).map((message) => structuredClone(message)),
 		),
-		...(offset === 1 && first?.role === "compactionSummary" ? { previousCheckpoint: first.summary } : {}),
+		...(previousCheckpoint === undefined ? {} : { previousCheckpoint: previousCheckpoint.summary }),
 		firstKeptEntryId: kept.entry.id,
 		coveredThroughEntryId: covered.entry.id,
 		tail,

@@ -1,14 +1,5 @@
-import type {
-	Api,
-	AssistantMessage,
-	Context,
-	Model,
-	Provider,
-	ProviderHeaders,
-	ThinkingLevel,
-	Usage,
-} from "@earendil-works/pi-ai";
-import { retryAssistantCall } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Context, Model, ThinkingLevel, Usage } from "@earendil-works/pi-ai";
+import { ModelsError, retryAssistantCall } from "@earendil-works/pi-ai";
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import {
@@ -30,32 +21,45 @@ export interface GeneratedCheckpoint {
 	readonly sourceEstimatedTokens: number;
 }
 
-async function resolveProvider(
-	context: ExtensionContext,
-	model: Model<Api>,
-): Promise<{
-	readonly provider: Provider;
-	readonly apiKey?: string;
-	readonly headers?: ProviderHeaders;
-	readonly env?: Record<string, string>;
-}> {
-	const provider = context.modelRegistry.getProvider(model.provider);
-	if (provider === undefined) {
-		throw new ContextManagementError(
-			"context_management.compactor_auth_failure",
-			`Active provider ${model.provider} is unavailable.`,
-		);
+/**
+ * 通过 session 的 model registry 发起 compactor 请求。
+ *
+ * Pi 0.86.0 起 `Provider.streamSimple` 只接受 `normalizeContext()` 产出的 `TranscriptContext`，
+ * 而 `ModelRegistry.streamSimple` 接收裸 `Context`，并负责 transcript 归一化、凭据解析与
+ * `auth.baseUrl` 覆盖，因此 compactor 不再自己解析 provider 与凭据，也不再直接触达 provider 层。
+ */
+async function streamCompactorRequest(input: {
+	readonly extensionContext: ExtensionContext;
+	readonly model: Model<Api>;
+	readonly context: Context;
+	readonly maxTokens: number;
+	readonly reasoning: ThinkingLevel | undefined;
+	readonly sessionId: string;
+	readonly signal?: AbortSignal;
+}): Promise<AssistantMessage> {
+	try {
+		return await input.extensionContext.modelRegistry
+			.streamSimple(input.model, input.context, {
+				maxTokens: input.maxTokens,
+				maxRetries: 0,
+				...(input.reasoning === undefined ? {} : { reasoning: input.reasoning }),
+				timeoutMs: COMPACTOR_REQUEST_TIMEOUT_MS,
+				sessionId: input.sessionId,
+				...(input.signal === undefined ? {} : { signal: input.signal }),
+			})
+			.result();
+	} catch (error) {
+		if (
+			error instanceof ModelsError &&
+			(error.code === "auth" || error.code === "oauth" || error.code === "provider")
+		) {
+			throw new ContextManagementError(
+				"context_management.compactor_auth_failure",
+				`Compactor request was rejected by the model registry: ${error.message}`,
+			);
+		}
+		throw error;
 	}
-	const auth = await context.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok) {
-		throw new ContextManagementError("context_management.compactor_auth_failure", auth.error);
-	}
-	return {
-		provider,
-		...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
-		...(auth.headers === undefined ? {} : { headers: auth.headers }),
-		...(auth.env === undefined ? {} : { env: auth.env }),
-	};
 }
 
 function summarizerContext(input: {
@@ -80,13 +84,9 @@ async function requestCheckpoint(input: {
 	readonly extensionContext: ExtensionContext;
 	readonly pi: ExtensionAPI;
 	readonly model: Model<Api>;
-	readonly provider: Provider;
 	readonly messages: readonly AgentMessage[];
 	readonly maxTokens: number;
 	readonly signal?: AbortSignal;
-	readonly apiKey?: string;
-	readonly headers?: ProviderHeaders;
-	readonly env?: Record<string, string>;
 }): Promise<AssistantMessage> {
 	throwIfAborted(input.signal);
 	const systemPrompt = input.extensionContext.getSystemPrompt();
@@ -111,20 +111,16 @@ async function requestCheckpoint(input: {
 	const reasoning: ThinkingLevel | undefined =
 		selectedReasoning === undefined || selectedReasoning === "off" ? undefined : selectedReasoning;
 	const response = await retryAssistantCall(
-		async () =>
-			await input.provider
-				.streamSimple(input.model, requestContext, {
-					maxTokens: input.maxTokens,
-					maxRetries: 0,
-					...(reasoning === undefined ? {} : { reasoning }),
-					timeoutMs: COMPACTOR_REQUEST_TIMEOUT_MS,
-					sessionId,
-					...(input.signal === undefined ? {} : { signal: input.signal }),
-					...(input.apiKey === undefined ? {} : { apiKey: input.apiKey }),
-					...(input.headers === undefined ? {} : { headers: input.headers }),
-					...(input.env === undefined ? {} : { env: input.env }),
-				})
-				.result(),
+		() =>
+			streamCompactorRequest({
+				extensionContext: input.extensionContext,
+				model: input.model,
+				context: requestContext,
+				maxTokens: input.maxTokens,
+				reasoning,
+				sessionId,
+				...(input.signal === undefined ? {} : { signal: input.signal }),
+			}),
 		{
 			enabled: true,
 			maxRetries: COMPACTOR_TRANSPORT_MAX_RETRIES,
@@ -167,7 +163,6 @@ export async function generateCheckpoint(input: {
 			"The active model has no usable checkpoint output budget.",
 		);
 	}
-	const auth = await resolveProvider(input.context, model);
 	throwIfAborted(input.signal);
 	let correction: string | undefined;
 	const attempts = input.regenerateOnce ? 2 : 1;
@@ -180,13 +175,9 @@ export async function generateCheckpoint(input: {
 				extensionContext: input.context,
 				pi: input.pi,
 				model,
-				provider: auth.provider,
 				messages: input.messages,
 				maxTokens,
 				...(input.signal === undefined ? {} : { signal: input.signal }),
-				...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
-				...(auth.headers === undefined ? {} : { headers: auth.headers }),
-				...(auth.env === undefined ? {} : { env: auth.env }),
 			});
 		} catch (error) {
 			if (error instanceof ContextManagementError) throw error;

@@ -1,4 +1,5 @@
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import type { Api, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, normalizeContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { generateCheckpoint } from "../src/compaction/generator.js";
@@ -12,6 +13,7 @@ describe("checkpoint generator", () => {
 		let sawInstruction = false;
 		faux.setResponses([
 			(request, options) => {
+				const leading = request.messages[0];
 				const last = request.messages.at(-1);
 				const lastText =
 					last?.role === "user"
@@ -20,8 +22,8 @@ describe("checkpoint generator", () => {
 							: last.content.find((block) => block.type === "text")?.text
 						: undefined;
 				sawInstruction =
-					request.systemPrompt === "system prompt" &&
-					request.tools?.length === 0 &&
+					leading?.role === "system" &&
+					leading.content === "system prompt" &&
 					lastText === COMPACTION_INSTRUCTION &&
 					options?.reasoning === "high";
 				return fauxAssistantMessage("## Next Step\n- continue");
@@ -118,8 +120,8 @@ function createGeneratorHost(): {
 		getSystemPrompt: () => "system prompt",
 		sessionManager: { getSessionId: () => "session-1" },
 		modelRegistry: {
-			getProvider: (provider: string) => (provider === model.provider ? faux.provider : undefined),
-			getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test-key" }),
+			streamSimple: (requestModel: Model<Api>, context: Context, options?: SimpleStreamOptions) =>
+				faux.provider.streamSimple(requestModel, normalizeContext(context), options),
 		},
 	} as unknown as ExtensionContext;
 	return { pi, context, faux };
